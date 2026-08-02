@@ -1,0 +1,50 @@
+import { AssetBundle } from './assetBundle';
+import { AudioClip } from './audioClip';
+import { Material } from './material';
+import { MonoBehaviour } from './monoBehaviour';
+import { MonoScript } from './monoScript';
+import { Sprite } from './sprite';
+import { SpriteAtlas } from './spriteAtlas';
+import { TextAsset } from './textAsset';
+import { Texture2D } from './texture2d';
+import type { ObjectInfo } from './types';
+import { AssetType } from './types';
+
+export type AssetObject =
+  | TextAsset
+  | Texture2D
+  | Sprite
+  | SpriteAtlas
+  | AssetBundle
+  | MonoBehaviour
+  | MonoScript
+  | AudioClip
+  | Material;
+
+type ImplementedAssetType = keyof typeof classMap;
+
+const classMap = {
+  [AssetType.TextAsset]: TextAsset,
+  [AssetType.Texture2D]: Texture2D,
+  [AssetType.Sprite]: Sprite,
+  [AssetType.SpriteAtlas]: SpriteAtlas,
+  [AssetType.AssetBundle]: AssetBundle,
+  [AssetType.MonoBehaviour]: MonoBehaviour,
+  [AssetType.MonoScript]: MonoScript,
+  [AssetType.AudioClip]: AudioClip,
+  [AssetType.Material]: Material,
+} as const;
+
+export const createAssetObject = (info: ObjectInfo) => {
+  if (info.classId in classMap) {
+    try {
+      return new classMap[info.classId as ImplementedAssetType](info, info.getReader());
+    } catch (e) {
+      console.warn(
+        `[createAssetObject] failed to create asset (classId=${info.classId}, pathId=${info.pathId}):`,
+        e instanceof Error ? e.message : e,
+      );
+      return undefined;
+    }
+  }
+};

@@ -1,0 +1,56 @@
+{
+  "name": "@local/unity-js",
+  "version": "5.2.0-local",
+  "type": "module",
+  "main": "./src/index.ts",
+  "types": "./src/index.ts",
+  "exports": {
+    ".": {
+      "types": "./src/index.ts",
+      "default": "./src/index.ts"
+    },
+    "./audio": {
+      "types": "./src/utils/audio.ts",
+      "default": "./src/utils/audio.ts"
+    },
+    "./utils/*": {
+      "types": "./src/utils/*.ts",
+      "default": "./src/utils/*.ts"
+    },
+    "./*": {
+      "types": "./src/*.ts",
+      "default": "./src/*.ts"
+    }
+  },
+  "author": "神代綺凛 <i@loli.best>",
+  "license": "AGPL-3.0",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/arkntools/unity-js.git"
+  },
+  "files": [
+    "dist",
+    "src"
+  ],
+  "keywords": [
+    "arknights",
+    "unity",
+    "asset-bundle"
+  ],
+  "dependencies": {
+    "@arkntools/fmod": "^1.0.4",
+    "@arkntools/lame-wasm": "^1.0.2",
+    "@arkntools/unity-js-tools": "^3.2.0",
+    "@jimp/core": "^1.6.1",
+    "@jimp/js-png": "^1.6.1",
+    "@jimp/plugin-crop": "^1.6.1",
+    "@jimp/plugin-flip": "^1.6.1",
+    "@jimp/plugin-resize": "^1.6.1",
+    "@jimp/plugin-rotate": "^1.6.1",
+    "@jimp/types": "^1.6.1",
+    "@jimp/wasm-png": "^1.6.1",
+    "aes-js": "^3.1.2",
+    "es-toolkit": "^1.47.0",
+    "jszip": "^3.10.1"
+  }
+}

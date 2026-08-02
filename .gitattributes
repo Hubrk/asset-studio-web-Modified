@@ -1,0 +1,9 @@
+# Auto detect text files and perform LF normalization
+* text=auto
+
+# Auto generated files
+src/auto-imports.d.ts text eol=lf
+src/components.d.ts text eol=lf
+
+# 3rd party lib
+src/lib/spine-player/* linguist-generated

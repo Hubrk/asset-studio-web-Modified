@@ -1,0 +1,53 @@
+export type Locale = 'zh-CN' | 'en-US';
+
+export interface LocaleMessages {
+  file: string;
+  loadFile: string;
+  loadFolder: string;
+  batchWorkflow: string;
+  options: string;
+  enablePreview: string;
+  hideNamelessAssets: string;
+  exportOptions: string;
+  unityCNOptions: string;
+  env: string;
+  none: string;
+  arknights: string;
+  arknightsEndfield: string;
+  export: string;
+  allAssets: string;
+  filteredAssets: string;
+  selectedAssets: string;
+  allDecryptedBundles: string;
+  currentDecryptedBundle: string;
+  allDecompressedBundles: string;
+  currentDecompressedBundle: string;
+  allEncryptedBundles: string;
+  currentEncryptedBundle: string;
+  allModifiedBundles: string;
+  currentModifiedBundle: string;
+  encryptAndExport: string;
+  decryptAndExport: string;
+  editTexture: string;
+  multiSelect: string;
+  exportDecrypted: string;
+  exportEncrypted: string;
+  darkMode: string;
+  lightMode: string;
+  repository: string;
+  search: string;
+  preview: string;
+  typeTree: string;
+  inspect: string;
+  previewDisabled: string;
+  noPreview: string;
+  regex: string;
+  caseSensitive: string;
+  vxeTableAllFilter: string;
+  vxeTableConfirmFilter: string;
+  vxeTableResetFilter: string;
+  vxeLoadingText: string;
+}
+
+export { zhCN } from './zh-CN';
+export { enUS } from './en-US';
