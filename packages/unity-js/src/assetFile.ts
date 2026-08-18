@@ -27,7 +27,7 @@ export interface AssetFile {
   readonly options?: AssetFileLoadOptions;
   getContainer: (pathId: bigint) => string;
   /** 重建/重新打包该文件。仅 BundleFile 实现（VFS 等返回 undefined）。 */
-  rebuild?: (compressionMode?: number) => ArrayBuffer;
+  rebuild: (compressionMode?: number) => ArrayBuffer;
 }
 
 export enum FileType {

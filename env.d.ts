@@ -4,6 +4,9 @@
 /// <reference types="vite-svg-loader" />
 /// <reference types="@types/wicg-file-system-access" />
 
+/** vite define 注入：worker 侧读取构建版本号，用于排查缓存问题 */
+declare const __APP_VERSION__: string | undefined;
+
 declare module 'lz4js' {
   export function compressBound(n: number): number;
   export function compressBlock(
@@ -35,3 +38,6 @@ declare module 'node-web-audio-api' {
 declare module 'aes-js' {
   export const ModeOfOperation: any;
 }
+
+// vorbis-encoder-js 的 WASM 模块入口无类型声明，提供宽松垫片
+declare module 'vorbis-encoder-js/dist/libvorbis.js';

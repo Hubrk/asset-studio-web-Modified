@@ -37,6 +37,9 @@ export default defineConfig(({ command }) => {
   // 生产构建必须用该 base，否则所有资源 URL 指向仓库根域名 → 404。
   // 本地 dev / 测试保持根路径。
   base: command === 'build' ? '/asset-studio-web-Modified/' : '/',
+  define: {
+    __APP_VERSION__: JSON.stringify(process.env.npm_package_version || 'dev'),
+  },
   server: {
     port: 8080,
   },
@@ -50,6 +53,9 @@ export default defineConfig(({ command }) => {
       },
     }),
     VitePWA({
+      // dev 模式禁用 PWA：避免 Service Worker 缓存旧版 JS/worker，
+      // 导致"换端口正常、8080 一直加载旧代码"的诡异 bug；生产构建仍启用
+      disable: command === 'serve',
       registerType: 'autoUpdate',
       workbox: {
         maximumFileSizeToCacheInBytes: 400 * 1024 * 1024, // 400MB：允许大模型文件

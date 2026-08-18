@@ -28,6 +28,8 @@ class PartVFSFile implements AssetFile {
   readonly objects: AssetObject[];
   readonly textureMixCache = new Map<string, Jimp>();
   readonly containerMap?: Map<bigint, String>;
+  /** 本 VFS 部分的原始字节（用于 rebuild 原样还原；本容器无重新打包写入器） */
+  private readonly rawBytes: ArrayBuffer;
   constructor(
     r: ArrayBufferReader,
     readonly options?: AssetFileLoadOptions,
@@ -39,6 +41,9 @@ class PartVFSFile implements AssetFile {
 
     // read header
     const header = readVFSHeader(r);
+
+    // 记录本部分原始字节，rebuild 时原样返回（VFS 无写入器，未修改则字节级等价）
+    this.rawBytes = r.rawBuffer.slice(offset, offset + header.size);
 
     // read blocks info
     let blockInfosOffset: number;
@@ -111,6 +116,11 @@ class PartVFSFile implements AssetFile {
     return this.containerMap?.get(pathId)?.toString() || '';
   }
 
+  /** VFS 容器无写入器：原样返回本部分原始字节（未修改时与输入字节级等价） */
+  rebuild(): ArrayBuffer {
+    return this.rawBytes.slice(0);
+  }
+
   private readBlocksInfoAndDirectory(
     r: ArrayBufferReader,
     header: VFSHeader,
@@ -169,6 +179,8 @@ export class VFSFile implements AssetFile {
   readonly objects: AssetObject[];
   readonly textureMixCache = new Map<string, Jimp>();
   readonly containerMap?: Map<bigint, String>;
+  /** 各 VFS 部分原始字节的引用（rebuild 时按序拼接，等价还原原始文件） */
+  private readonly rawParts: ArrayBuffer[] = [];
 
   constructor(
     r: ArrayBufferReader,
@@ -182,6 +194,7 @@ export class VFSFile implements AssetFile {
 
       this.nodes.push(...vfs.nodes);
       this.files.push(...vfs.files);
+      this.rawParts.push(vfs.rebuild());
       for (const [k, v] of vfs.objectMap) this.objectMap.set(k, v);
       for (const [k, v] of vfs.textureMixCache) this.textureMixCache.set(k, v);
       if (vfs.containerMap) {
@@ -198,5 +211,10 @@ export class VFSFile implements AssetFile {
 
   getContainer(pathId: bigint): string {
     return this.containerMap?.get(pathId)?.toString() || '';
+  }
+
+  /** VFS 容器无写入器：按序拼接各部分原始字节（未修改时与输入字节级等价） */
+  rebuild(): ArrayBuffer {
+    return concatArrayBuffer(this.rawParts);
   }
 }

@@ -348,6 +348,13 @@ export class Texture2D extends AssetBase implements GetImage {
     if (index === -1) throw new Error(`Cannot find node by path: ${sPath}`);
     const file = this.bundle.files[index];
     const r = new ArrayBufferReader(file);
+    // 防御：外部 streamData 的 offset/size 超出该节点文件范围时（如损坏/被
+    // 修改过的文件），返回空数据而非抛异常导致整个 Texture2D 解析失败。
+    // 空数据会在后续解码/展示时自然降级，不会阻断其它资产加载。
+    const end = streamInfo.offset + streamInfo.size;
+    if (streamInfo.offset < 0 || end > r.length || streamInfo.size <= 0) {
+      return new Uint8Array(0);
+    }
     r.seek(streamInfo.offset);
     return r.readBuffer(streamInfo.size);
   }
