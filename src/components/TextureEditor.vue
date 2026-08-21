@@ -236,14 +236,6 @@ const sharpenLevel = ref<number>(0);
 // 未锐化基准：每次加载/编辑操作后固化的画布快照，切换强度时从它重新计算
 let sharpenBase: ImageData | null = null;
 
-/** 把当前画布内容固化为锐化基准（编辑操作完成后调用） */
-const captureSharpenBase = () => {
-  const ctx = getCtx();
-  const canvas = canvasRef.value;
-  if (!ctx || !canvas || canvas.width === 0 || canvas.height === 0) return;
-  sharpenBase = ctx.getImageData(0, 0, canvas.width, canvas.height);
-};
-
 /** 按当前强度把锐化结果应用到画布预览（level=0 恢复基准） */
 const applySharpenPreview = () => {
   const ctx = getCtx();
@@ -263,6 +255,25 @@ const applySharpenPreview = () => {
   );
   // ImageData 构造要求 Uint8ClampedArray（sharpenRgba 返回 Uint8Array，需转换）
   ctx.putImageData(new ImageData(new Uint8ClampedArray(data), sharpenBase.width, sharpenBase.height), 0, 0);
+};
+
+/** 把当前画布内容固化为锐化基准（编辑操作完成后调用）；
+ *  withPreview=true 时立即按当前强度重新应用锐化预览（编辑后的新内容直接显示锐化效果） */
+const captureSharpenBase = (withPreview = true) => {
+  const ctx = getCtx();
+  const canvas = canvasRef.value;
+  if (!ctx || !canvas || canvas.width === 0 || canvas.height === 0) return;
+  sharpenBase = ctx.getImageData(0, 0, canvas.width, canvas.height);
+  if (withPreview) applySharpenPreview();
+};
+
+/** 编辑操作开始前调用：把画布恢复到未锐化基准，保证操作（画笔/抠图/取色）基于原始内容，
+ *  避免在已锐化的显示上继续编辑造成累积锐化 */
+const restoreSharpenBase = () => {
+  if (sharpenLevel.value <= 0) return;
+  const ctx = getCtx();
+  if (!ctx || !sharpenBase) return;
+  ctx.putImageData(sharpenBase, 0, 0);
 };
 
 watch(sharpenLevel, () => applySharpenPreview());
@@ -507,6 +518,7 @@ const drawLine = (fromX: number, fromY: number, toX: number, toY: number) => {
 
 const startDraw = (e: MouseEvent) => {
   if (tool.value === 'fill') return;
+  restoreSharpenBase(); // 编辑前回到未锐化内容
   isDrawing.value = true;
   lastPos.value = getCanvasPos(e);
   drawLine(lastPos.value.x, lastPos.value.y, lastPos.value.x, lastPos.value.y);
@@ -563,6 +575,7 @@ const handleClick = (e: MouseEvent) => {
     return;
   }
   if (tool.value !== 'fill') return;
+  restoreSharpenBase(); // 填充前回到未锐化内容
   const ctx = getCtx();
   if (!ctx) return;
   const pos = getCanvasPos(e);
@@ -585,6 +598,7 @@ const handlePickAndRemoveColor = (e: MouseEvent) => {
   const canvas = canvasRef.value;
   const ctx = getCtx();
   if (!canvas || !ctx) return;
+  restoreSharpenBase(); // 取色抠图前回到未锐化内容（取色基于原始像素）
   const pos = getCanvasPos(e);
   const imgData = ctx.getImageData(0, 0, canvas.width, canvas.height);
   const data = imgData.data;
@@ -681,6 +695,7 @@ const handleRemoveBg = async () => {
   const canvas = canvasRef.value;
   const ctx = getCtx();
   if (!canvas || !ctx) return;
+  restoreSharpenBase(); // 抠图前回到未锐化内容（模型输入应为原始像素）
 
   const removal = currentBgRemoval.value;
 
@@ -697,10 +712,12 @@ const handleRemoveBg = async () => {
       ElMessage.info(`正在加载抠图模型（${modelName.value}，${sizeHint}）...`);
       await removal.init();
       ElMessage.success(`${modelName.value} 模型已就绪，再次点击执行抠图`);
+      applySharpenPreview(); // 恢复锐化预览（加载期间画布被恢复为未锐化）
       return;
     } catch (e) {
       console.error('[RMBG] 模型加载失败:', e);
       ElMessage.error(`模型加载失败: ${e}`);
+      applySharpenPreview(); // 失败也恢复预览
       return;
     } finally {
       isModelLoading.value = false;

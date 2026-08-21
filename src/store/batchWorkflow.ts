@@ -179,6 +179,10 @@ export const useBatchWorkflow = defineStore('batchWorkflow', () => {
   const removeBgFeather = ref(true);
   const removeBgMaxSize = ref(1024);
   const fallbackCropRatio = ref(0.13);
+  /** 兜底裁剪方向：'bottom'=保留顶部裁下方（默认）| 'top'=保留底部裁上方 | 'center'=居中裁上下 */
+  const fallbackCropDirection = ref<'bottom' | 'top' | 'center'>('bottom');
+  /** 启用通用裁剪：对所有图片都按兜底比例裁剪（不再需要 isFallback/比例差/Portrait 条件） */
+  const universalCrop = ref(false);
   const batchSize = ref(100);
   const matchSuffix = ref('_generated');
   /** 导出纹理模式：是否在文件名中加入 bundle 资产文件名 */
@@ -1238,22 +1242,30 @@ export const useBatchWorkflow = defineStore('batchWorkflow', () => {
             });
           }
 
-          // b1. 兜底匹配裁剪：仅在长宽比差异较大且含 Portrait 关键词时裁剪下方
-          if (task.isFallback) {
-            const dimKey = `${task.bundleFileName}|${task.pathId}`;
-            const origDims = textureDimMap.get(dimKey);
-            const imgRatio = imageData.width / imageData.height;
-            const texRatio = origDims ? origDims.width / origDims.height : imgRatio;
-            const ratioDiff = Math.abs(imgRatio - texRatio);
-            const hasPortrait = /portrait/i.test(task.textureName) || /portrait/i.test(task.imageName);
-            if (ratioDiff > 0.1 && hasPortrait) {
-              const keepRatio = 1 - fallbackCropRatio.value;
-              const cropH = Math.floor(imageData.height * keepRatio);
-              const srcCanvas = new OffscreenCanvas(imageData.width, cropH);
-              const srcCtx = srcCanvas.getContext('2d')!;
-              srcCtx.putImageData(imageData, 0, 0, 0, 0, imageData.width, cropH);
-              imageData = srcCtx.getImageData(0, 0, imageData.width, cropH);
-            }
+          // b1. 裁剪：通用裁剪（所有图）或兜底裁剪（比例差大且含 Portrait 关键词）
+          // 方向由 fallbackCropDirection 控制：bottom=保留顶部裁下方 / top=保留底部裁上方 / center=居中裁上下
+          const cropDimKey = `${task.bundleFileName}|${task.pathId}`;
+          const cropOrigDims = textureDimMap.get(cropDimKey);
+          const imgRatio = imageData.width / imageData.height;
+          const texRatio = cropOrigDims ? cropOrigDims.width / cropOrigDims.height : imgRatio;
+          const ratioDiff = Math.abs(imgRatio - texRatio);
+          const hasPortrait = /portrait/i.test(task.textureName) || /portrait/i.test(task.imageName);
+          const needCrop =
+            universalCrop.value ||
+            (task.isFallback && ratioDiff > 0.1 && hasPortrait);
+          if (needCrop && fallbackCropRatio.value > 0) {
+            const keepRatio = 1 - fallbackCropRatio.value;
+            const cropH = Math.max(1, Math.floor(imageData.height * keepRatio));
+            const offsetY =
+              fallbackCropDirection.value === 'top'
+                ? imageData.height - cropH
+                : fallbackCropDirection.value === 'center'
+                  ? Math.floor((imageData.height - cropH) / 2)
+                  : 0;
+            const srcCanvas = new OffscreenCanvas(imageData.width, cropH);
+            const srcCtx = srcCanvas.getContext('2d')!;
+            srcCtx.putImageData(imageData, 0, 0, 0, offsetY, imageData.width, cropH);
+            imageData = srcCtx.getImageData(0, 0, imageData.width, cropH);
           }
 
           // c. 自适应大小：缩放图片到原始纹理尺寸（contain 等比填充）
@@ -1793,6 +1805,8 @@ export const useBatchWorkflow = defineStore('batchWorkflow', () => {
     removeBgFeather.value = true;
     removeBgMaxSize.value = 1024;
     fallbackCropRatio.value = 0.13;
+    fallbackCropDirection.value = 'bottom';
+    universalCrop.value = false;
     includeBundleName.value = false;
     tasks.value = [];
     exportTextureTasks.value = [];
@@ -1845,6 +1859,8 @@ export const useBatchWorkflow = defineStore('batchWorkflow', () => {
     removeBgFeather,
     removeBgMaxSize,
     fallbackCropRatio,
+    fallbackCropDirection,
+    universalCrop,
     batchSize,
     matchSuffix,
     includeBundleName,

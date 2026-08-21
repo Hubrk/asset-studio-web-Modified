@@ -179,7 +179,24 @@
               size="small"
               :disabled="store.isRunning"
             />
-            <span class="param-label">裁剪下方比例</span>
+            <span class="param-label">裁剪比例</span>
+            <el-select
+              v-model="store.fallbackCropDirection"
+              :disabled="store.isRunning"
+              size="small"
+              style="width: 120px; margin-left: 8px"
+            >
+              <el-option label="裁下方(留头)" value="bottom" />
+              <el-option label="裁上方(留脚)" value="top" />
+              <el-option label="居中裁上下" value="center" />
+            </el-select>
+            <el-checkbox
+              v-model="store.universalCrop"
+              :disabled="store.isRunning"
+              style="margin-left: 12px"
+            >
+              启用通用裁剪（全部图片都裁）
+            </el-checkbox>
           </el-form-item>
 
           <el-form-item label="匹配后缀">
