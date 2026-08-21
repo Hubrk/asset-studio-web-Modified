@@ -1262,10 +1262,21 @@ export const useBatchWorkflow = defineStore('batchWorkflow', () => {
                 : fallbackCropDirection.value === 'center'
                   ? Math.floor((imageData.height - cropH) / 2)
                   : 0;
-            const srcCanvas = new OffscreenCanvas(imageData.width, cropH);
-            const srcCtx = srcCanvas.getContext('2d')!;
-            srcCtx.putImageData(imageData, 0, 0, 0, offsetY, imageData.width, cropH);
-            imageData = srcCtx.getImageData(0, 0, imageData.width, cropH);
+            // 用数组切片截取 [offsetY, offsetY+cropH) 区域——不依赖 putImageData 的
+            // dirty 参数语义（部分 canvas 实现下 dirty 行为不一致会导致 top/center 错乱），
+            // 纯内存操作，方向必然正确。
+            const rowBytes = imageData.width * 4;
+            const outData = new Uint8ClampedArray(rowBytes * cropH);
+            for (let r = 0; r < cropH; r++) {
+              outData.set(
+                imageData.data.subarray((offsetY + r) * rowBytes, (offsetY + r + 1) * rowBytes),
+                r * rowBytes,
+              );
+            }
+            console.info(
+              `[batch-crop] ${task.imageName} dir=${fallbackCropDirection.value} ratio=${fallbackCropRatio.value} h=${imageData.height} cropH=${cropH} offsetY=${offsetY}`,
+            );
+            imageData = new ImageData(outData, imageData.width, cropH);
           }
 
           // c. 自适应大小：缩放图片到原始纹理尺寸（contain 等比填充）
