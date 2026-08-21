@@ -41,3 +41,6 @@ research/
 
 # WorkBuddy tool state
 .workbuddy/
+
+# vite build 临时输出目录
+.build*
