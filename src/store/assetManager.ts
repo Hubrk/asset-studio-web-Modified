@@ -435,6 +435,14 @@ export const useAssetManager = defineStore('assetManager', () => {
   const khBundleFileIds = ref<Set<string>>(new Set());
   const khFormat = ref<string>('UnityKHFS');
 
+  /** 写回 bundle 压缩模式：0=NONE(默认,不压缩) | 2=LZ4 | 3=LZ4_HC(游戏兼容) */
+  const compressionMode = ref<number>(0);
+
+  const setCompressionMode = async (mode: number) => {
+    compressionMode.value = mode;
+    await (await manager).setCompressionMode(mode);
+  };
+
   /** Track which fileIds have been modified (e.g., via Edit tab texture changes) */
   const modifiedFileIds = ref<Set<string>>(new Set());
 
@@ -673,6 +681,8 @@ export const useAssetManager = defineStore('assetManager', () => {
     hasKhBundles,
     khBundleFileIds,
     khFormat,
+    compressionMode,
+    setCompressionMode,
     modifyTexture2D,
     modifyTextAsset,
     modifySpritePixelsToUnits,

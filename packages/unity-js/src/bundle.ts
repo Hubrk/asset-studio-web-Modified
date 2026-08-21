@@ -1,4 +1,5 @@
 import { decompressLz4, decompressLzmaWithSize } from '@arkntools/unity-js-tools';
+import { compressLz4 } from './lz4';
 import { zip } from 'es-toolkit';
 import { Asset } from './asset';
 import type { AssetFile, AssetFileLoadOptions } from './assetFile';
@@ -149,57 +150,98 @@ export class BundleFile implements AssetFile {
    * Rebuild the UnityFS binary from the (possibly modified) files array.
    *
    * Strategy: preserve the original block/node structure from blockInfos,
-   * but split the concatenated file data across the original number of blocks
-   * (each with compression type NONE). This matches the output of standard
-   * unpacking tools, which keep the original block count and only change each
-   * block's compression from LZ4/LZ4HC to NONE.
+   * but split the concatenated file data across the original number of blocks.
+   * When `compressionMode` is NONE (default for the app) every block is stored
+   * uncompressed; when LZ4 / LZ4_HC is selected, blocks that compress well are
+   * stored as standard LZ4 raw blocks (LZ4HC and LZ4 share the same format).
    *
-   * If blockInfos is empty (unexpected), falls back to a single-block layout.
+   * @param compressionMode 输出压缩模式：CompressionType.LZ4_HC(3) | LZ4(2) |
+   *                        NONE(0)。默认 NONE（不压缩，与游戏实测兼容；
+   *                        该游戏加载器只认 LZ4_HC，标 LZ4(2) 会报资源损坏，
+   *                        故 LZ4 选择也按 LZ4_HC 输出）。非法值兜底 LZ4_HC。
    */
-  rebuild(): ArrayBuffer {
+  rebuild(compressionMode: number = CompressionType.NONE): ArrayBuffer {
+    // 校验/兜底：NONE(0)/LZ4_HC(3) 直接接受；LZ4(2) 按 LZ4_HC 输出（游戏只认 HC）
+    const targetType: CompressionType =
+      compressionMode === CompressionType.NONE ? CompressionType.NONE : CompressionType.LZ4_HC;
+    const doCompress = targetType !== CompressionType.NONE;
+
     // 1. Concatenate all files into block data
     const blockData = concatArrayBuffer([...this.files]);
+    const blockDataU8 = new Uint8Array(blockData);
 
-    // 2. Build blocksInfo (uncompressed), preserving original block count
+    // 2. Determine each block's uncompressed size and original compression flags,
+    //    preserving the original block count / split.
     const origBlockCount = this.blockInfos.length;
-
-    // Determine each block's uncompressed size:
-    // - If we have original blockInfos, use their uncompressedSize (preserves
-    //   the original split, e.g. 3 blocks for 3 segments of data).
-    // - Otherwise, put everything in one block.
     const blockSizes: number[] = [];
+    const blockOrigFlags: number[] = [];
     if (origBlockCount > 0) {
       let sumOrig = 0;
       for (const bi of this.blockInfos) {
         blockSizes.push(bi.uncompressedSize);
+        blockOrigFlags.push(bi.flags);
         sumOrig += bi.uncompressedSize;
       }
       // If file data total doesn't match original sum (e.g. modified), fall
       // back to single block to avoid misalignment.
       if (sumOrig !== blockData.byteLength) {
         blockSizes.length = 0;
+        blockOrigFlags.length = 0;
         blockSizes.push(blockData.byteLength);
+        blockOrigFlags.push(origBlockCount > 0 ? this.blockInfos[0].flags : 0);
       }
     } else {
       blockSizes.push(blockData.byteLength);
+      blockOrigFlags.push(0);
     }
 
-    const biWriter = new ArrayBufferWriter(64 + this.nodes.length * 64);
-    // hash (16 bytes zero — already zero from ArrayBuffer init)
-    biWriter.move(16);
-    // block count
-    biWriter.writeUInt32BE(blockSizes.length);
-    // block entries: uncompressedSize, compressedSize (same, uncompressed), flags (NONE)
+    // 3. Compress each block when the target mode asks for it.
+    const blockOffsets: number[] = [];
+    {
+      let acc = 0;
+      for (const s of blockSizes) {
+        blockOffsets.push(acc);
+        acc += s;
+      }
+    }
+    const compBlocks: Uint8Array[] = [];
+    const compSizes: number[] = [];
+    const blockTypes: CompressionType[] = [];
     for (let i = 0; i < blockSizes.length; i++) {
-      const sz = blockSizes[i];
-      biWriter.writeUInt32BE(sz);
-      biWriter.writeUInt32BE(sz); // compressed == uncompressed (NONE)
-      // Preserve the STREAMED flag from the original block, set compression to NONE
-      const origFlags = origBlockCount > 0 ? this.blockInfos[i].flags : 0;
-      const newBlockFlags = (origFlags & ~StorageBlockFlags.COMPRESSION_TYPE_MASK) | CompressionType.NONE;
+      const u = blockSizes[i];
+      const uBlock = new Uint8Array(blockDataU8.subarray(blockOffsets[i], blockOffsets[i] + u));
+      let doComp = false;
+      if (doCompress) {
+        const c = compressLz4(uBlock);
+        if (c.length < u) {
+          compBlocks.push(c);
+          compSizes.push(c.length);
+          doComp = true;
+        }
+      }
+      if (!doComp) {
+        compBlocks.push(uBlock);
+        compSizes.push(u);
+      }
+      blockTypes.push(doComp ? targetType : CompressionType.NONE);
+    }
+    const anyCompressed = blockTypes.some(t => t !== CompressionType.NONE);
+
+    // 4. Build blocksInfo (uncompressed), then compress it if archive is compressed.
+    // 注意：blocksInfo 必须按「块数量」而非「节点数量」预留空间——一个 bundle
+    // 可被拆成多个 storage block（如 16 个 LZ4_HC 块），但只有 2 个文件节点。
+    let nodeSection = 4; // writeUInt32BE(nodes.length)
+    for (const n of this.nodes) nodeSection += 21 + n.path.length; // 2×u64 + u32 + path\0
+    const biWriter = new ArrayBufferWriter(16 + 4 + blockSizes.length * 10 + nodeSection + 32);
+    biWriter.move(16);
+    biWriter.writeUInt32BE(blockSizes.length);
+    for (let i = 0; i < blockSizes.length; i++) {
+      biWriter.writeUInt32BE(blockSizes[i]);     // uncompressedSize
+      biWriter.writeUInt32BE(compSizes[i]);       // compressedSize (compressed or == uncompressed)
+      const origFlags = blockOrigFlags[i];
+      const newBlockFlags = (origFlags & ~StorageBlockFlags.COMPRESSION_TYPE_MASK) | blockTypes[i];
       biWriter.writeUInt16BE(newBlockFlags);
     }
-    // node entries
     biWriter.writeUInt32BE(this.nodes.length);
     let nodeOffset = 0;
     for (let i = 0; i < this.nodes.length; i++) {
@@ -211,9 +253,30 @@ export class BundleFile implements AssetFile {
       biWriter.writeStringUntilZero(node.path);
       nodeOffset += fileSize;
     }
-    const blocksInfo = biWriter.getBuffer().slice(0, biWriter.position);
+    const blocksInfoUncompressed = biWriter.getBuffer().slice(0, biWriter.position);
 
-    // 3. Compute total size with proper alignment
+    // blocksInfo compression is controlled by the header flags (decompressor uses it).
+    let blocksInfoOut = blocksInfoUncompressed;
+    let blocksInfoCompressedSize = blocksInfoUncompressed.byteLength;
+    if (anyCompressed) {
+      const cbi = compressLz4(new Uint8Array(blocksInfoUncompressed));
+      if (cbi.length < blocksInfoUncompressed.byteLength) {
+        blocksInfoOut = cbi;
+        blocksInfoCompressedSize = cbi.length;
+      } else {
+        // blocksInfo not compressible: fallback whole archive to NONE so the
+        // decompressor (which reads header flags) won't try to inflate it.
+        for (let i = 0; i < blockSizes.length; i++) {
+          const u = blockSizes[i];
+          compBlocks[i] = new Uint8Array(blockDataU8.subarray(blockOffsets[i], blockOffsets[i] + u));
+          compSizes[i] = u;
+          blockTypes[i] = CompressionType.NONE;
+        }
+      }
+    }
+    const finalArchiveType = anyCompressed ? targetType : CompressionType.NONE;
+
+    // 5. Compute total size with proper alignment
     const headerBaseSize =
       this.header.signature.length +
       1 + // signature + null
@@ -228,36 +291,33 @@ export class BundleFile implements AssetFile {
       4; // flags
     const headerPaddedSize = Math.ceil(headerBaseSize / 16) * 16;
 
-    const blocksInfoEnd = headerPaddedSize + blocksInfo.byteLength;
+    const blocksInfoEnd = headerPaddedSize + blocksInfoOut.byteLength;
     let blockDataStart = blocksInfoEnd;
     // If BLOCK_INFO_NEED_PADDING_AT_START, align block data to 16
     const needPaddingAtStart = !!(this.header.flags & ArchiveFlags.BLOCK_INFO_NEED_PADDING_AT_START);
     if (needPaddingAtStart && blockDataStart % 16 !== 0) {
       blockDataStart = blockDataStart - (blockDataStart % 16) + 16;
     }
-    const totalSize = blockDataStart + blockData.byteLength;
+    let totalBlockCompressed = 0;
+    for (const s of compSizes) totalBlockCompressed += s;
+    const totalSize = blockDataStart + totalBlockCompressed;
 
-    // 4. Build the final UnityFS buffer
+    // 6. Build the final UnityFS buffer
     const writer = new ArrayBufferWriter(totalSize);
-    // header
     writer.writeStringUntilZero(this.header.signature);
     writer.writeUInt32BE(this.header.version);
     writer.writeStringUntilZero(this.header.unityVersion);
     writer.writeStringUntilZero(this.header.unityReversion);
     writer.writeUInt64BE(BigInt(totalSize));
-    writer.writeUInt32BE(blocksInfo.byteLength); // compressedBlocksInfoSize
-    writer.writeUInt32BE(blocksInfo.byteLength); // uncompressedBlocksInfoSize (same)
-    // Keep high bits of flags, set blocksInfo compression to NONE
-    const newFlags = this.header.flags & ~ArchiveFlags.COMPRESSION_TYPE_MASK;
+    writer.writeUInt32BE(blocksInfoCompressedSize);
+    writer.writeUInt32BE(blocksInfoUncompressed.byteLength);
+    // Keep high bits of flags, set archive compression type
+    const newFlags = (this.header.flags & ~ArchiveFlags.COMPRESSION_TYPE_MASK) | finalArchiveType;
     writer.writeUInt32BE(newFlags);
-    // align header to 16
     writer.align(16);
-    // blocksInfo
-    writer.writeBuffer(blocksInfo);
-    // padding before block data if needed
+    writer.writeBuffer(blocksInfoOut);
     if (needPaddingAtStart) writer.align(16);
-    // block data (uncompressed)
-    writer.writeBuffer(blockData);
+    for (const b of compBlocks) writer.writeBuffer(b);
 
     return writer.getBuffer();
   }

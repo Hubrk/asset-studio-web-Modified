@@ -109,6 +109,13 @@
         <el-tooltip content="生成 Mipmap 链（关闭则仅写入基础级别）" placement="top">
           <el-checkbox v-model="generateMips" size="small">Mipmaps</el-checkbox>
         </el-tooltip>
+        <el-tooltip content="写回 bundle 的压缩格式：默认不压缩（体积最大但游戏最稳）；LZ4_HC 兼容游戏、体积小。游戏加载器只认 LZ4_HC。" placement="top">
+          <el-select v-model="compressionModeModel" size="small" style="width: 118px">
+            <el-option label="不压缩" :value="0" />
+            <el-option label="LZ4_HC" :value="3" />
+            <el-option label="LZ4" :value="2" />
+          </el-select>
+        </el-tooltip>
         <span class="format-info">{{ currentFormatLabel }}</span>
       </div>
       <div class="toolbar-section">
@@ -300,9 +307,17 @@ const supportedFormatOptions = computed(() => {
   return allFormats;
 });
 
-// 默认使用 BC7（高质量块压缩），Mipmaps 默认关闭以避免 6x6 等大块格式进一步降质
-const targetFormat = ref<number>(TextureFormat.BC7);
+// 默认使用 RGBA32（无损纹理，游戏实测可进），Mipmaps 默认关闭以避免大块格式进一步降质
+const targetFormat = ref<number>(TextureFormat.RGBA32);
 const generateMips = ref(false);
+
+/** 写回压缩模式（0=不压缩 默认 | 2=LZ4 | 3=LZ4_HC），选择即同步到全局 + worker */
+const compressionModeModel = computed({
+  get: () => assetManager.compressionMode,
+  set: (v: number) => {
+    assetManager.setCompressionMode(v);
+  },
+});
 
 const formatLabel = (fmt: number) => TextureFormat[fmt] ?? `Format ${fmt}`;
 const currentFormatLabel = computed(() => {
@@ -672,7 +687,7 @@ const handleReset = () => {
   canvas.height = originalImageData.value.height;
   ctx.putImageData(originalImageData.value, 0, 0);
   hasEdits.value = false;
-  targetFormat.value = TextureFormat.BC7;
+  targetFormat.value = TextureFormat.RGBA32;
   generateMips.value = false;
   lastScaleInfo.value = null;
   imageInfo.value = `${canvas.width}×${canvas.height}`;

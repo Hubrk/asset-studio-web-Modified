@@ -115,6 +115,8 @@ export default defineConfig(({ command }) => {
       '@': fileURLToPath(new URL('./src', import.meta.url)),
       'lodash-es': 'es-toolkit/compat',
       '@jimp/js-png': '@jimp/wasm-png',
+      // node-web-audio-api 是 FMOD 桌面端音频后端的原生模块，浏览器/Web 端不会执行该路径
+      'node-web-audio-api': 'empty-module',
     },
   },
   optimizeDeps: {

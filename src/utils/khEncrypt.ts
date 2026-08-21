@@ -1,4 +1,5 @@
-import { compressBlock, compressBound, decompressBlock } from 'lz4js';
+import { decompressBlock } from 'lz4js';
+import { compressLz4 } from '../../packages/unity-js/src/lz4';
 import { xorDecrypt, rotateBytes, isUnityFs, KH_KEYS, KH_FORMATS, type KhBundleMeta } from './khDecrypt';
 
 // Layout of a decrypted UnityFS buffer produced by decryptKhBundle:
@@ -45,44 +46,12 @@ function invRotate(amount: number, n: number): number {
  * Used to re-compress blocksInfo when the source compression (e.g. none, after
  * UABE edits) doesn't match the target compression expected by the game (e.g.
  * LZ4_HC, as stored in the original KH meta).
+ *
+ * 使用规范 LZ4 压缩器（packages/unity-js/src/lz4.ts，已用官方 lz4 C 库验证）。
+ * 此前用 lz4js.compressBlock 会产出损坏流（游戏端 LZ4 解压器报资源损坏）。
  */
 function compressLz4Block(data: Uint8Array): Uint8Array {
-  const hashTable = new Uint32Array(1 << 16);
-  const bound = compressBound(data.length);
-  const dst = new Uint8Array(bound);
-  const compSize = compressBlock(data, dst, 0, data.length, hashTable);
-  if (compSize === 0) {
-    // compressBlock returns 0 when no matches were found (entire input is
-    // literals). Manually encode an all-literals LZ4 block so the game can
-    // still decompress it.
-    return encodeLz4AllLiterals(data);
-  }
-  return dst.slice(0, compSize);
-}
-
-/**
- * Manually encode an all-literals LZ4 block (token + length extension + literals).
- * This is the fallback when lz4js compressBlock finds no matches.
- */
-function encodeLz4AllLiterals(data: Uint8Array): Uint8Array {
-  const len = data.length;
-  const tokens: number[] = [];
-  if (len < 15) {
-    tokens.push(len << 4);
-  } else {
-    tokens.push(15 << 4);
-    let remaining = len - 15;
-    while (remaining >= 255) {
-      tokens.push(255);
-      remaining -= 255;
-    }
-    tokens.push(remaining);
-  }
-  const header = new Uint8Array(tokens);
-  const result = new Uint8Array(header.length + data.length);
-  result.set(header, 0);
-  result.set(data, header.length);
-  return result;
+  return compressLz4(data);
 }
 
 /**

@@ -144,6 +144,21 @@
             </el-checkbox>
           </el-form-item>
 
+          <el-form-item label="压缩模式">
+            <el-select
+              v-model="compressionModeModel"
+              :disabled="store.isRunning"
+              style="width: 200px"
+            >
+              <el-option label="不压缩（默认，游戏兼容）" :value="0" />
+              <el-option label="LZ4_HC（体积小，兼容游戏）" :value="3" />
+              <el-option label="LZ4（体积略大）" :value="2" />
+            </el-select>
+            <el-text type="info" class="dir-hint">
+              写回 bundle 的压缩格式。默认不压缩 + 无损纹理（RGBA32）；游戏加载器只认 LZ4_HC，选压缩时请用 LZ4_HC
+            </el-text>
+          </el-form-item>
+
           <el-form-item label="兜底裁剪">
             <el-input-number
               v-model="store.fallbackCropRatio"
@@ -846,9 +861,19 @@
 <script setup lang="ts">
 import { TextureFormat } from '@arkntools/unity-js';
 import { useBatchWorkflow } from '@/store/batchWorkflow';
+import { useAssetManager } from '@/store/assetManager';
 import type { BatchTaskItem, ExportTextureTaskItem, FilterResolutionTaskItem, ImageMatchTaskItem, AssetMatchTaskItem } from '@/store/batchWorkflow';
 
 const store = useBatchWorkflow();
+const assetManager = useAssetManager();
+
+/** 写回压缩模式（0=不压缩 默认 | 2=LZ4 | 3=LZ4_HC），选择即同步到全局 + worker */
+const compressionModeModel = computed({
+  get: () => assetManager.compressionMode,
+  set: (v: number) => {
+    assetManager.setCompressionMode(v);
+  },
+});
 
 // 对话框可见性，供 AppHeader 通过 ref.open() 调用
 const visible = ref(false);

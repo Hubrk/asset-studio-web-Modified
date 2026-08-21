@@ -49,6 +49,16 @@ export class AssetManager {
   private fileNameMap = new Map<string, string>();
   private khMetaByFileName = new Map<string, KhBundleMeta>();
   private modifiedAssets = new Set<string>();
+  /** 导出压缩模式：0=NONE(不压缩,默认) | 2=LZ4 | 3=LZ4_HC(游戏兼容) */
+  private compressionMode = 0;
+
+  setCompressionMode(mode: number) {
+    this.compressionMode = mode;
+  }
+
+  getCompressionMode(): number {
+    return this.compressionMode;
+  }
 
   static setFsbConverter(fsbConverter: (typeof AudioClipLoader)['fsbConverter']) {
     AudioClipLoader.fsbConverter = fsbConverter;
@@ -595,9 +605,11 @@ export class AssetManager {
     return true;
   }
 
-  encryptBundleToKh(fileId: string, signature?: string): ArrayBuffer | undefined {
-    const unityFs = this.unityFsMap.get(fileId);
-    if (!unityFs || !isUnityFs(unityFs)) return undefined;
+  async encryptBundleToKh(fileId: string, signature?: string): Promise<ArrayBuffer | undefined> {
+    const raw = this.unityFsMap.get(fileId);
+    if (!raw || !isUnityFs(raw)) return undefined;
+    // 按当前选择的压缩模式重打包（unityFsMap 里可能是上次 NONE 重打包的产物）
+    const unityFs = await loadAssetBundle(raw.slice(0)).then(b => b.rebuild(this.compressionMode));
     const meta = this.khMetaMap.get(fileId);
     const fileName = this.fileNameMap.get(fileId);
     return encryptUnityFsToKh(unityFs, meta, signature, fileName);
