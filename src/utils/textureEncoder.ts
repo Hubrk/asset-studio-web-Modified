@@ -618,6 +618,94 @@ export const flipVerticalRgba = (
 };
 
 /**
+ * Unsharp mask 锐化（强度与半径可调）
+ *
+ * 源图较糊 / 抠图重采样后边缘发糊时使用。对 RGB 三通道做高斯模糊差值：
+ *   out = orig + amount * (orig - blurred)
+ * alpha 通道保持原值不变。
+ *
+ * - radius=1：单遍 3x3 Gaussian（核 /16）
+ * - radius=2：两遍 3x3 Gaussian（近似 5x5，作用范围更大，适合更糊的图）
+ *
+ * 应在 bleedAlpha 之后调用：透明区域 RGB 已被扩散为平滑色，卷积邻域
+ * 干净，不会把 (0,0,0) 拉进边缘造成暗边。alpha=0 像素不参与渲染，
+ * 其 RGB 即使被锐化也不可见。
+ */
+export interface SharpenOptions {
+  /** 锐化强度 0~2，默认 1.0（适中；0.6 轻度 / 1.4 较强） */
+  amount?: number;
+  /** 高斯模糊半径：1（3x3）或 2（两遍 3x3 近似 5x5），默认 1 */
+  radius?: 1 | 2;
+}
+
+/** 锐化强度预设（UI 与 worker 共用）：0=关闭，1=轻度，2=适中，3=较强 */
+export const SHARPEN_PRESETS: Record<number, SharpenOptions> = {
+  1: { amount: 0.6, radius: 1 },
+  2: { amount: 1.0, radius: 1 },
+  3: { amount: 1.4, radius: 2 },
+};
+
+/** 3x3 高斯模糊（核 /16：[1 2 1; 2 4 2; 1 2 1]），结果写入 out（仅 RGB，alpha 拷贝） */
+const blur3x3 = (
+  src: Uint8Array,
+  dst: Uint8Array,
+  width: number,
+  height: number,
+): void => {
+  for (let y = 0; y < height; y++) {
+    const y0 = y > 0 ? y - 1 : 0;
+    const y1 = y < height - 1 ? y + 1 : height - 1;
+    for (let x = 0; x < width; x++) {
+      const x0 = x > 0 ? x - 1 : 0;
+      const x1 = x < width - 1 ? x + 1 : width - 1;
+      const oi = (y * width + x) * 4;
+      dst[oi + 3] = src[oi + 3];
+      const p00 = (y0 * width + x0) * 4;
+      const p01 = (y0 * width + x) * 4;
+      const p02 = (y0 * width + x1) * 4;
+      const p10 = (y * width + x0) * 4;
+      const p12 = (y * width + x1) * 4;
+      const p20 = (y1 * width + x0) * 4;
+      const p21 = (y1 * width + x) * 4;
+      const p22 = (y1 * width + x1) * 4;
+      for (let c = 0; c < 3; c++) {
+        dst[oi + c] = Math.round(
+          (src[p00 + c] + 2 * src[p01 + c] + src[p02 + c] +
+            2 * src[p10 + c] + 4 * src[oi + c] + 2 * src[p12 + c] +
+            src[p20 + c] + 2 * src[p21 + c] + src[p22 + c]) / 16,
+        );
+      }
+    }
+  }
+};
+
+export const sharpenRgba = (
+  rgba: Uint8Array<ArrayBuffer>,
+  width: number,
+  height: number,
+  options: SharpenOptions = {},
+): Uint8Array<ArrayBuffer> => {
+  const amount = options.amount ?? 1.0;
+  const radius = options.radius ?? 1;
+  const blur1 = new Uint8Array(rgba.length);
+  blur3x3(rgba, blur1, width, height);
+  // radius=2：对模糊结果再模糊一次（两遍 3x3 ≈ 5x5），作用范围更大
+  const blurred = radius === 2 ? new Uint8Array(rgba.length) : blur1;
+  if (radius === 2) blur3x3(blur1, blurred, width, height);
+
+  const out = new Uint8Array(rgba.length);
+  for (let i = 0; i < rgba.length; i += 4) {
+    out[i + 3] = rgba[i + 3]; // alpha 原样
+    for (let c = 0; c < 3; c++) {
+      const orig = rgba[i + c];
+      const sharp = orig + amount * (orig - blurred[i + c]);
+      out[i + c] = sharp < 0 ? 0 : sharp > 255 ? 255 : Math.round(sharp);
+    }
+  }
+  return out;
+};
+
+/**
  * Alpha bleeding：将完全透明像素（alpha=0）的 RGB 设为周围像素的平滑扩散色
  *
  * 导入的 PNG 透明背景区域 RGB=(0,0,0)。块压缩格式（ASTC/DXT/BC）每个块

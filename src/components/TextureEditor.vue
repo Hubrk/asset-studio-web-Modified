@@ -109,6 +109,14 @@
         <el-tooltip content="生成 Mipmap 链（关闭则仅写入基础级别）" placement="top">
           <el-checkbox v-model="generateMips" size="small">Mipmaps</el-checkbox>
         </el-tooltip>
+        <el-tooltip content="提升清晰度：对发糊边缘做锐化，选择后立即在画布预览，满意再点「应用修改」" placement="top">
+          <el-select v-model="sharpenLevel" size="small" style="width: 92px">
+            <el-option label="不锐化" :value="0" />
+            <el-option label="轻度锐化" :value="1" />
+            <el-option label="适中锐化" :value="2" />
+            <el-option label="较强锐化" :value="3" />
+          </el-select>
+        </el-tooltip>
         <el-tooltip content="写回 bundle 的压缩格式：默认不压缩（体积最大但游戏最稳）；LZ4_HC 兼容游戏、体积小。游戏加载器只认 LZ4_HC。" placement="top">
           <el-select v-model="compressionModeModel" size="small" style="width: 118px">
             <el-option label="不压缩" :value="0" />
@@ -166,6 +174,7 @@ import { useAssetManager } from '@/store/assetManager';
 import { useBackgroundRemoval } from '@/composables/useBackgroundRemoval';
 import { useTfjsBgRemoval } from '@/composables/useTfjsBgRemoval';
 import { useFastBgRemoval } from '@/composables/useFastBgRemoval';
+import { sharpenRgba, SHARPEN_PRESETS } from '@/utils/textureEncoder';
 
 const props = defineProps<{
   asset: AssetInfo;
@@ -219,6 +228,44 @@ const isDrawing = ref(false);
 const lastPos = ref({ x: 0, y: 0 });
 const originalImageData = ref<ImageData | null>(null);
 const imageInfo = ref('');
+
+// === 锐化（实时预览，确认后再应用） ===
+// sharpenLevel：0=关闭，1=轻度，2=适中，3=较强。调整后立即在画布预览，
+// 「应用修改」写入的即是所见内容（不再二次锐化）。
+const sharpenLevel = ref<number>(0);
+// 未锐化基准：每次加载/编辑操作后固化的画布快照，切换强度时从它重新计算
+let sharpenBase: ImageData | null = null;
+
+/** 把当前画布内容固化为锐化基准（编辑操作完成后调用） */
+const captureSharpenBase = () => {
+  const ctx = getCtx();
+  const canvas = canvasRef.value;
+  if (!ctx || !canvas || canvas.width === 0 || canvas.height === 0) return;
+  sharpenBase = ctx.getImageData(0, 0, canvas.width, canvas.height);
+};
+
+/** 按当前强度把锐化结果应用到画布预览（level=0 恢复基准） */
+const applySharpenPreview = () => {
+  const ctx = getCtx();
+  if (!ctx || !sharpenBase) return;
+  const level = sharpenLevel.value;
+  if (level <= 0) {
+    ctx.putImageData(sharpenBase, 0, 0);
+    return;
+  }
+  const preset = SHARPEN_PRESETS[level];
+  if (!preset) return;
+  const data = sharpenRgba(
+    new Uint8Array(sharpenBase.data),
+    sharpenBase.width,
+    sharpenBase.height,
+    preset,
+  );
+  // ImageData 构造要求 Uint8ClampedArray（sharpenRgba 返回 Uint8Array，需转换）
+  ctx.putImageData(new ImageData(new Uint8ClampedArray(data), sharpenBase.width, sharpenBase.height), 0, 0);
+};
+
+watch(sharpenLevel, () => applySharpenPreview());
 const hasEdits = ref(false);
 
 // === 导入图片尺寸适配 ===
@@ -386,6 +433,9 @@ const loadImageToCanvas = async (url: string, isImport = false) => {
     lastScaleInfo.value = null;
     imageInfo.value = `${srcW}×${srcH}`;
   }
+  // 新图从原始清晰度看起：重置锐化强度并固化基准
+  sharpenLevel.value = 0;
+  captureSharpenBase();
 };
 
 watch(
@@ -472,6 +522,8 @@ const draw = (e: MouseEvent) => {
 
 const stopDraw = () => {
   isDrawing.value = false;
+  // 画笔操作完成：把结果固化为锐化基准（后续切强度从新内容计算）
+  captureSharpenBase();
 };
 
 const floodFill = (ctx: CanvasRenderingContext2D, startX: number, startY: number, fillColor: number[]) => {
@@ -517,6 +569,7 @@ const handleClick = (e: MouseEvent) => {
   const color = cssColorToRgba(brushColor.value);
   floodFill(ctx, pos.x, pos.y, color);
   hasEdits.value = true;
+  captureSharpenBase();
 };
 
 // === 色度键抠图 ===
@@ -572,6 +625,7 @@ const handlePickAndRemoveColor = (e: MouseEvent) => {
   hasEdits.value = true;
   pickingColor.value = false;
   ElMessage.success(`已扣掉颜色 rgb(${r},${g},${b})，共 ${removed} 像素`);
+  captureSharpenBase();
 };
 
 const handleImportImage = () => {
@@ -669,6 +723,7 @@ const handleRemoveBg = async () => {
     ctx.putImageData(result, 0, 0);
     hasEdits.value = true;
     ElMessage.success(`${modelName.value} 抠图完成（如仍有残留，可用"色度键抠图"兜底）`);
+    captureSharpenBase();
   } catch (e) {
     ElMessage.error(`抠图失败: ${e}`);
   } finally {
@@ -691,6 +746,8 @@ const handleReset = () => {
   generateMips.value = false;
   lastScaleInfo.value = null;
   imageInfo.value = `${canvas.width}×${canvas.height}`;
+  sharpenLevel.value = 0; // 重置：回到原始清晰度
+  captureSharpenBase();
 };
 
 // 1:1 对比预览：按住按钮时显示原始纹理，松开恢复当前编辑状态
@@ -743,6 +800,7 @@ const handleApply = async () => {
       canvas.height,
       fmt,
       generateMips.value,
+      false, // 画布已包含锐化预览结果，worker 不再二次锐化
     );
     if (ok) {
       originalImageData.value = ctx.getImageData(0, 0, canvas.width, canvas.height);

@@ -9,7 +9,7 @@ import type { RepoBatchDataHandler, RepoDataHandler } from '@/types/repository';
 import { decryptKhBundle, isKhBundle, isUnityFs, splitKhBundle, type KhBundleMeta } from '@/utils/khDecrypt';
 import { encryptUnityFsToKh } from '@/utils/khEncrypt';
 import { PromisePool } from '@/utils/promisePool';
-import { bleedAlpha, encodeTextureWithMips, flipVerticalRgba, isFormatSupported } from '@/utils/textureEncoder';
+import { bleedAlpha, encodeTextureWithMips, flipVerticalRgba, isFormatSupported, sharpenRgba, SHARPEN_PRESETS } from '@/utils/textureEncoder';
 import { clearCache, createLoader } from './loaders';
 import type { AssetExportItem, PreviewInfo } from './loaders';
 import { AudioClipLoader } from './loaders/audioClip';
@@ -300,6 +300,7 @@ export class AssetManager {
     return undefined;
   }
 
+/** 锐化强度预设：0=关闭，1=轻度，2=适中（默认），3=较强 */
   async modifyTexture2D(
     fileId: string,
     pathId: bigint,
@@ -308,6 +309,7 @@ export class AssetManager {
     height: number,
     targetFormat?: TextureFormat,
     generateMips?: boolean,
+    sharpen?: number,
   ): Promise<boolean> {
     const origFs = this.unityFsMap.get(fileId);
     if (!origFs) throw new Error(`modifyTexture2D: file ${fileId} not found`);
@@ -337,7 +339,9 @@ export class AssetManager {
     }
 
     const flipped = flipVerticalRgba(new Uint8Array(rgbaData), width, height);
-    const rgba = bleedAlpha(flipped, width, height);
+    let rgba = bleedAlpha(flipped, width, height);
+    const preset = sharpen ? SHARPEN_PRESETS[sharpen] : undefined;
+    if (preset) rgba = sharpenRgba(rgba, width, height, preset);
 
     const originalDataSize = tex.streamData?.size ?? tex.dataSize;
     const targetDataSize = generateMips === false ? 0 : originalDataSize;

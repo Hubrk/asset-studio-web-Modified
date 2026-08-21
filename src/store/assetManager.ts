@@ -438,6 +438,9 @@ export const useAssetManager = defineStore('assetManager', () => {
   /** 写回 bundle 压缩模式：0=NONE(默认,不压缩) | 2=LZ4 | 3=LZ4_HC(游戏兼容) */
   const compressionMode = ref<number>(0);
 
+  /** 批量写回纹理时应用锐化的强度：0=关闭，1=轻度，2=适中，3=较强（单图编辑在 UI 预览中自行应用，不依赖此值） */
+  const sharpen = ref<number>(0);
+
   const setCompressionMode = async (mode: number) => {
     compressionMode.value = mode;
     await (await manager).setCompressionMode(mode);
@@ -501,6 +504,8 @@ export const useAssetManager = defineStore('assetManager', () => {
     height: number,
     targetFormat?: TextureFormat,
     generateMips?: boolean,
+    /** 单图编辑已在画布预览中应用锐化时为 false（避免 worker 二次锐化）；批量流程默认 true 用 sharpen.value */
+    useStoreSharpen = true,
   ): Promise<boolean> => {
     try {
       const result = await (await manager).modifyTexture2D(
@@ -511,6 +516,7 @@ export const useAssetManager = defineStore('assetManager', () => {
         height,
         targetFormat,
         generateMips,
+        useStoreSharpen ? sharpen.value : 0,
       );
       if (result) {
         previewVersion.value++;
@@ -683,6 +689,7 @@ export const useAssetManager = defineStore('assetManager', () => {
     khFormat,
     compressionMode,
     setCompressionMode,
+    sharpen,
     modifyTexture2D,
     modifyTextAsset,
     modifySpritePixelsToUnits,

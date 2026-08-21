@@ -142,6 +142,16 @@
             <el-checkbox v-model="store.generateMips" :disabled="store.isRunning">
               生成 Mipmaps
             </el-checkbox>
+            <el-select
+              v-model="assetManager.sharpen"
+              :disabled="store.isRunning"
+              style="width: 110px"
+            >
+              <el-option label="不锐化" :value="0" />
+              <el-option label="轻度锐化" :value="1" />
+              <el-option label="适中锐化" :value="2" />
+              <el-option label="较强锐化" :value="3" />
+            </el-select>
           </el-form-item>
 
           <el-form-item label="压缩模式">
