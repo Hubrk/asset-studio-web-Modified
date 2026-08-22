@@ -1,4 +1,4 @@
-import type { ArrayBufferReader } from '../utils/reader';
+import { ArrayBufferReader } from '../utils/reader';
 import { ArrayBufferWriter } from '../utils/writer';
 import { AssetBase } from './base';
 import type { ObjectInfo } from './types';

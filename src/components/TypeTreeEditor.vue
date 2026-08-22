@@ -57,7 +57,8 @@ const isValid = ref(true);
 const parseError = ref('');
 const hasTypeTree = ref(false);
 
-const handleJsonBigint = (num: bigint) => JSON.rawJSON?.(num.toString()) ?? num.toString();
+// bigint 无法直接 JSON 序列化，统一转成十进制字符串（避免精度丢失）
+const handleJsonBigint = (num: bigint) => num.toString();
 
 watch(
   () => props.data,

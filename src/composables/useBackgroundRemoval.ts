@@ -1,4 +1,5 @@
 import * as ort from 'onnxruntime-web';
+import type { Ref } from 'vue';
 import {
   RMBG_MODEL,
   hasModel,
@@ -314,7 +315,7 @@ async function removeBackground(
     }
 
     // 边缘羽化：3x3 box blur
-    let blurredMask = mask;
+    let blurredMask: Uint8ClampedArray = mask;
     if (feather) {
       blurredMask = boxBlur3x3(mask, processW, processH);
     }

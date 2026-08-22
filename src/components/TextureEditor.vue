@@ -31,7 +31,7 @@
           </el-select>
         </el-tooltip>
         <el-tooltip
-          :content="currentBgRemoval.isModelReady.value ? `对当前画布执行 AI 抠图（${modelName.value}）` : '点击加载抠图模型'"
+          :content="currentBgRemoval.isModelReady.value ? `对当前画布执行 AI 抠图（${modelName}）` : '点击加载抠图模型'"
           placement="top"
         >
           <el-button

@@ -265,7 +265,7 @@ export class AssetManager {
     const origFs = this.unityFsMap.get(fileId);
     if (!origFs) return undefined;
     const bundle = await loadAssetBundle(origFs.slice(0));
-    return bundle.rebuild();
+    return bundle.rebuild!();
   }
 
   isKhBundle(fileId: string): boolean {
@@ -420,7 +420,7 @@ export class AssetManager {
       bundle.files[assetNodeIndex] = rebuiltAsset;
     }
 
-    const rebuilt = bundle.rebuild();
+    const rebuilt = bundle.rebuild!();
 
     this.unityFsMap.set(fileId, rebuilt);
     this.bundleMap.delete(fileId);
@@ -469,7 +469,7 @@ export class AssetManager {
     }
     bundle.files[assetNodeIndex] = rebuiltAsset;
 
-    const rebuilt = bundle.rebuild();
+    const rebuilt = bundle.rebuild!();
     this.unityFsMap.set(fileId, rebuilt);
     this.bundleMap.delete(fileId);
     const newBundle = await loadAssetBundle(rebuilt.slice(0));
@@ -542,7 +542,7 @@ export class AssetManager {
     bundle.files[assetNodeIndex] = rebuiltAsset;
 
     // Rebuild the bundle
-    const rebuilt = bundle.rebuild();
+    const rebuilt = bundle.rebuild!();
     this.unityFsMap.set(fileId, rebuilt);
     this.bundleMap.delete(fileId);
     const newBundle = await loadAssetBundle(rebuilt.slice(0));
@@ -598,7 +598,7 @@ export class AssetManager {
     }
     bundle.files[assetNodeIndex] = rebuiltAsset;
 
-    const rebuilt = bundle.rebuild();
+    const rebuilt = bundle.rebuild!();
     this.unityFsMap.set(fileId, rebuilt);
     this.bundleMap.delete(fileId);
     const newBundle = await loadAssetBundle(rebuilt.slice(0));

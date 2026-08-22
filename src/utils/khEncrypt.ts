@@ -1,5 +1,5 @@
 import { decompressBlock } from 'lz4js';
-import { compressLz4 } from '../../packages/unity-js/src/lz4';
+import { compressLz4 } from '@arkntools/unity-js';
 import { xorDecrypt, rotateBytes, isUnityFs, KH_KEYS, KH_FORMATS, type KhBundleMeta } from './khDecrypt';
 
 // Layout of a decrypted UnityFS buffer produced by decryptKhBundle:
@@ -480,7 +480,7 @@ export function fixUnityCrcInPlace(unityFs: ArrayBuffer, fileName: string): Arra
   if (!match) {
     throw new Error(`fixUnityCrc: cannot parse target CRC from file name '${fileName}'`);
   }
-  const targetCrc = match[0] >>> 0; // uint32
+  const targetCrc = parseInt(match[0], 10) >>> 0; // uint32
 
   let data = new Uint8Array(unityFs.slice(0));
 

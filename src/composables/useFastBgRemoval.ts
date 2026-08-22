@@ -172,7 +172,7 @@ async function init(): Promise<void> {
       if (cached) {
         console.log('[Fast Removebg] 从 IndexedDB 缓存加载');
         const cachedBuf = await getModel(FAST_MODEL_ID, FAST_MODEL_VERSION);
-        if (isValidOnnxModel(cachedBuf)) {
+        if (cachedBuf && isValidOnnxModel(cachedBuf)) {
           buffer = cachedBuf;
           sharedModelLoadProgress.value = 0.5;
         } else {
@@ -328,7 +328,7 @@ async function removeBackground(
     }
 
     // 边缘羽化
-    let blurredMask = mask;
+    let blurredMask: Uint8ClampedArray = mask;
     if (feather) {
       blurredMask = boxBlur3x3(mask, processW, processH);
     }

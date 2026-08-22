@@ -14,6 +14,8 @@ export interface PreviewImageDetail {
   height?: number;
   canEdit?: boolean;
   supportedFormats?: number[];
+  /** 是否为 Sprite（启用 Sprite 编辑器） */
+  spriteEditor?: boolean;
 }
 
 export interface PreviewTextDetail {

@@ -242,7 +242,7 @@ const handleCheckboxChange: VxeTableEvents.CheckboxChange<AssetInfo> = async ({ 
   try {
     const $table = tableRef.value!;
     const fileId = row.fileId;
-    const isChecked = $table.isCheckboxRowByKey(row.key);
+    const isChecked = (($table as any).isCheckboxRowByKey?.(row.key) as boolean | undefined) ?? false;
     const { visibleData } = $table.getTableData();
     const otherSameFile = visibleData.filter(r => r.fileId === fileId && r.key !== row.key);
     if (otherSameFile.length) {
@@ -387,7 +387,7 @@ const handleMenu: VxeTableEvents.MenuClick<AssetInfo> = async params => {
     case 'copyRow': {
       // 复制所有可见列的全部文本（$table 已从 params 解构）
       const columns = $table.getTableColumn().fullColumn.filter((c) => c.visible !== false && c.field);
-      const texts = columns.map((c) => `${c.title || c.field}: ${row[c.field]}`);
+      const texts = columns.map((c) => `${c.title || c.field}: ${(row as unknown as Record<string, unknown>)[c.field as string]}`);
       navigator.clipboard.writeText(texts.join('\n'));
       break;
     }

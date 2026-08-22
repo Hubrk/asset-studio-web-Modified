@@ -1219,7 +1219,7 @@ const handleRunImageMatch = async () => {
     const doneCount = tasks.filter(t => t.status === 'done').length;
     const errorCount = tasks.filter(t => t.status === 'error').length;
     ElMessage({
-      message: skipCount > 0 ? `复制完成：成功 ${doneCount}，失败 ${errorCount}，跳过 ${skipCount} 个重复文件夹` : `复制完成：成功 ${doneCount}，失败 ${errorCount}`,
+      message: store.assetMatchSkipCount > 0 ? `复制完成：成功 ${doneCount}，失败 ${errorCount}，跳过 ${store.assetMatchSkipCount} 个重复文件夹` : `复制完成：成功 ${doneCount}，失败 ${errorCount}`,
       type: errorCount > 0 ? 'warning' : 'success',
     });
   } catch (e) {

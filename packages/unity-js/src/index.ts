@@ -8,6 +8,7 @@ export * from './lib/jimp';
 export * from './utils/reader';
 
 export { ArrayBufferWriter } from './utils/writer';
+export { compressLz4 } from './lz4';
 export { decodeTexture } from './utils/decodeTexture';
 export { serializeFromTypeTree } from './utils/typetreeSerializer';
 

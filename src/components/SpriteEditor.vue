@@ -29,7 +29,7 @@
 
 <script setup lang="ts">
 import { ref, computed, watch } from 'vue';
-import type { AssetInfo } from '@/workers/assetManager/loaders/default';
+import type { AssetInfo } from '@/workers/assetManager';
 import { useAssetManager } from '@/store/assetManager';
 
 const props = defineProps<{ asset: AssetInfo }>();

@@ -256,7 +256,7 @@ export class BundleFile implements AssetFile {
     const blocksInfoUncompressed = biWriter.getBuffer().slice(0, biWriter.position);
 
     // blocksInfo compression is controlled by the header flags (decompressor uses it).
-    let blocksInfoOut = blocksInfoUncompressed;
+    let blocksInfoOut: ArrayBuffer | Uint8Array = blocksInfoUncompressed;
     let blocksInfoCompressedSize = blocksInfoUncompressed.byteLength;
     if (anyCompressed) {
       const cbi = compressLz4(new Uint8Array(blocksInfoUncompressed));

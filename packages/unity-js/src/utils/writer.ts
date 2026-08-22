@@ -79,41 +79,36 @@ export class ArrayBufferWriter {
     this.writeBuffer(encoded);
     this.writeUInt8(0);
   }
-}
 
-// 动态生成 writeInt16/UInt16/Int32/UInt32/Int64/UInt64/Float32/Float64 及 LE/BE 变体
-for (const bits of [16, 32, 64]) {
-  const size = Math.round(bits / 8);
-  for (const unsigned of ['', 'U']) {
-    for (const [littleEndian, suffix] of [
-      [null, ''],
-      [true, 'LE'],
-      [false, 'BE'],
-    ] as const) {
-      const fnName = `write${unsigned}Int${bits}${suffix}`;
-      const viewFnName = `set${bits === 64 ? 'Big' : ''}${unsigned ? 'Uint' : 'Int'}${bits}`;
-      (ArrayBufferWriter.prototype as any)[fnName] = function (this: any, value: any) {
-        const le = littleEndian === null ? this.littleEndian : littleEndian;
-        this.view[viewFnName](this.offset, value, le);
-        this.offset += size;
-      };
-    }
-  }
-}
+  // ====== 16-bit ======
+  writeInt16(value: number): void { this.view.setInt16(this.offset, value, this.littleEndian); this.offset += 2; }
+  writeUInt16(value: number): void { this.view.setUint16(this.offset, value, this.littleEndian); this.offset += 2; }
+  writeInt16LE(value: number): void { this.view.setInt16(this.offset, value, true); this.offset += 2; }
+  writeUInt16LE(value: number): void { this.view.setUint16(this.offset, value, true); this.offset += 2; }
+  writeInt16BE(value: number): void { this.view.setInt16(this.offset, value, false); this.offset += 2; }
+  writeUInt16BE(value: number): void { this.view.setUint16(this.offset, value, false); this.offset += 2; }
 
-for (const bits of [32, 64]) {
-  const size = Math.round(bits / 8);
-  for (const [littleEndian, suffix] of [
-    [null, ''],
-    [true, 'LE'],
-    [false, 'BE'],
-  ] as const) {
-    const fnName = `writeFloat${bits}${suffix}`;
-    const viewFnName = `setFloat${bits}`;
-    (ArrayBufferWriter.prototype as any)[fnName] = function (this: any, value: any) {
-      const le = littleEndian === null ? this.littleEndian : littleEndian;
-      this.view[viewFnName](this.offset, value, le);
-      this.offset += size;
-    };
-  }
+  // ====== 32-bit ======
+  writeInt32(value: number): void { this.view.setInt32(this.offset, value, this.littleEndian); this.offset += 4; }
+  writeUInt32(value: number): void { this.view.setUint32(this.offset, value, this.littleEndian); this.offset += 4; }
+  writeInt32LE(value: number): void { this.view.setInt32(this.offset, value, true); this.offset += 4; }
+  writeUInt32LE(value: number): void { this.view.setUint32(this.offset, value, true); this.offset += 4; }
+  writeInt32BE(value: number): void { this.view.setInt32(this.offset, value, false); this.offset += 4; }
+  writeUInt32BE(value: number): void { this.view.setUint32(this.offset, value, false); this.offset += 4; }
+
+  // ====== 64-bit ======
+  writeInt64(value: bigint): void { this.view.setBigInt64(this.offset, value, this.littleEndian); this.offset += 8; }
+  writeUInt64(value: bigint): void { this.view.setBigUint64(this.offset, value, this.littleEndian); this.offset += 8; }
+  writeInt64LE(value: bigint): void { this.view.setBigInt64(this.offset, value, true); this.offset += 8; }
+  writeUInt64LE(value: bigint): void { this.view.setBigUint64(this.offset, value, true); this.offset += 8; }
+  writeInt64BE(value: bigint): void { this.view.setBigInt64(this.offset, value, false); this.offset += 8; }
+  writeUInt64BE(value: bigint): void { this.view.setBigUint64(this.offset, value, false); this.offset += 8; }
+
+  // ====== Float ======
+  writeFloat32(value: number): void { this.view.setFloat32(this.offset, value, this.littleEndian); this.offset += 4; }
+  writeFloat64(value: number): void { this.view.setFloat64(this.offset, value, this.littleEndian); this.offset += 8; }
+  writeFloat32LE(value: number): void { this.view.setFloat32(this.offset, value, true); this.offset += 4; }
+  writeFloat64LE(value: number): void { this.view.setFloat64(this.offset, value, true); this.offset += 8; }
+  writeFloat32BE(value: number): void { this.view.setFloat32(this.offset, value, false); this.offset += 4; }
+  writeFloat64BE(value: number): void { this.view.setFloat64(this.offset, value, false); this.offset += 8; }
 }
