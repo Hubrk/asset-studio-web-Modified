@@ -46,7 +46,7 @@ export default defineConfig(({ command }) => {
       },
     }),
     VitePWA({
-      registerType: 'prompt',
+      registerType: 'autoUpdate',
       workbox: {
         maximumFileSizeToCacheInBytes: 400 * 1024 * 1024, // 400MB：允许大模型文件
         // 排除 /models/ 路径，避免 service worker 拦截大文件请求导致 ERR_ABORTED
@@ -120,7 +120,7 @@ export default defineConfig(({ command }) => {
     },
   },
   optimizeDeps: {
-    exclude: ['@jimp/wasm-png', '@jimp/js-png', 'onnxruntime-web'],
+    exclude: ['@jimp/wasm-png', '@jimp/js-png', 'onnxruntime-web', '@arkntools/unity-js'],
   },
   // onnxruntime-web 需要独立 wasm 文件，避免被打包进 chunk
   // 通过 ?url 引用具体 wasm 资源路径由 Vite 处理为独立文件
