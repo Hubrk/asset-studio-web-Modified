@@ -468,12 +468,20 @@ const getCanvasPos = (e: MouseEvent) => {
   };
 };
 
-const setPixel = (ctx: CanvasRenderingContext2D, x: number, y: number, color: number[], size: number) => {
+/**
+ * 在已读出的像素 buffer 上，把以 (x,y) 为中心、size 大小的圆涂成 color/擦除。
+ * 不读取/写回画布（读取和写回由调用方在整条笔画的开始/结束各做一次）。
+ */
+const paintPixel = (
+  data: Uint8ClampedArray,
+  w: number,
+  h: number,
+  x: number,
+  y: number,
+  color: number[],
+  size: number,
+) => {
   const r = Math.floor(size / 2);
-  const imgData = ctx.getImageData(0, 0, ctx.canvas.width, ctx.canvas.height);
-  const data = imgData.data;
-  const w = ctx.canvas.width;
-  const h = ctx.canvas.height;
   for (let dy = -r; dy <= r; dy++) {
     for (let dx = -r; dx <= r; dx++) {
       const px = x + dx;
@@ -494,12 +502,17 @@ const setPixel = (ctx: CanvasRenderingContext2D, x: number, y: number, color: nu
       }
     }
   }
-  ctx.putImageData(imgData, 0, 0);
 };
 
 const drawLine = (fromX: number, fromY: number, toX: number, toY: number) => {
   const ctx = getCtx()!;
+  const canvas = canvasRef.value!;
   const color = cssColorToRgba(brushColor.value);
+  const w = canvas.width;
+  const h = canvas.height;
+  // 一次读出整帧，整条笔画只在绘制完成后写回一次 —— 避免每个步长都整帧 getImageData
+  const imgData = ctx.getImageData(0, 0, w, h);
+  const data = imgData.data;
   const dx = Math.abs(toX - fromX);
   const dy = Math.abs(toY - fromY);
   const sx = fromX < toX ? 1 : -1;
@@ -508,12 +521,13 @@ const drawLine = (fromX: number, fromY: number, toX: number, toY: number) => {
   let x = fromX;
   let y = fromY;
   while (true) {
-    setPixel(ctx, x, y, color, brushSize.value);
+    paintPixel(data, w, h, x, y, color, brushSize.value);
     if (x === toX && y === toY) break;
     const e2 = 2 * err;
     if (e2 > -dy) { err -= dy; x += sx; }
     if (e2 < dx) { err += dx; y += sy; }
   }
+  ctx.putImageData(imgData, 0, 0);
 };
 
 const startDraw = (e: MouseEvent) => {
