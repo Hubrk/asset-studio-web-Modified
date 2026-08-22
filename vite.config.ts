@@ -33,6 +33,10 @@ const nodePolyfillPlugins = () =>
 export default defineConfig(({ command }) => {
   const isTest = process.env.VITEST === 'true';
   return {
+  // GitHub Pages 部署在子路径 /asset-studio-web-Modified/ 下。
+  // 生产构建必须用该 base，否则所有资源 URL 指向仓库根域名 → 404。
+  // 本地 dev / 测试保持根路径。
+  base: command === 'build' ? '/asset-studio-web-Modified/' : '/',
   server: {
     port: 8080,
   },
