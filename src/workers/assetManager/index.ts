@@ -7,7 +7,7 @@ import { md5 as calcMd5 } from 'js-md5';
 import { ExportGroupMethod } from '@/types/export';
 import type { RepoBatchDataHandler, RepoDataHandler } from '@/types/repository';
 import { decryptKhBundle, isKhBundle, isUnityFs, splitKhBundle, type KhBundleMeta } from '@/utils/khDecrypt';
-import { encryptUnityFsToKh } from '@/utils/khEncrypt';
+import { encryptUnityFsToKh, computeCrc32Patch, CRC32_TABLE } from '@/utils/khEncrypt';
 import { PromisePool } from '@/utils/promisePool';
 import { bleedAlpha, encodeTextureWithMips, flipVerticalRgba, isFormatSupported, sharpenRgba, SHARPEN_PRESETS } from '@/utils/textureEncoder';
 import { clearCache, createLoader } from './loaders';
@@ -612,11 +612,62 @@ export class AssetManager {
   async encryptBundleToKh(fileId: string, signature?: string): Promise<ArrayBuffer | undefined> {
     const raw = this.unityFsMap.get(fileId);
     if (!raw || !isUnityFs(raw)) return undefined;
-    // 按当前选择的压缩模式重打包（unityFsMap 里可能是上次 NONE 重打包的产物）
-    const unityFs = await loadAssetBundle(raw.slice(0)).then(b => b.rebuild(this.compressionMode));
     const meta = this.khMetaMap.get(fileId);
     const fileName = this.fileNameMap.get(fileId);
-    return encryptUnityFsToKh(unityFs, meta, signature, fileName);
+
+    // 游戏完整性校验规则（字节实证，8/8 原版样本）：
+    //   CRC32(解压后的 blockData) == 文件名数字
+    // 原版数据天然满足；修改资源后必须补丁。补丁必须位于「节点数据流」内
+    // （rebuild 以 files 拼接 blockData，节点之外的尾部补丁会被丢弃），因此
+    // 追加到 resS 流节点尾部——Texture2D 按自身 streamData.offset/size 读取，
+    // 流尾 4 字节不影响资产，且随 rebuild(0/3) 一同进入明文/压缩数据，
+    // 解压后 CRC 校验通过。旧流程（对压缩字节尾部打补丁）解压后补丁不存在，
+    // 且可能污染 LZ4 流 → 游戏判定资源损坏。
+    const bundle = (await loadAssetBundle(raw.slice(0))) as BundleFile;
+    if (fileName) {
+      this.appendCrcPatchToBundle(bundle, fileName);
+    }
+    const unityFs = bundle.rebuild(this.compressionMode);
+    return encryptUnityFsToKh(unityFs, meta, signature, undefined);
+  }
+
+  /**
+   * 若 bundle 数据的 CRC32 ≠ 文件名数字，向 resS 流节点尾部追加 4 字节补丁。
+   * resS 是纹理数据流，尾部补丁不影响 Texture2D 读取（按 offset/size 截取）。
+   * 返回是否追加了补丁。
+   */
+  private appendCrcPatchToBundle(bundle: AssetFile, fileName: string): boolean {
+    const m = fileName.match(/\d+/);
+    if (!m) return false;
+    const targetCrc = parseInt(m[0], 10) >>> 0;
+
+    // blockData = files 按序拼接（与 BundleFile.rebuild 一致），流式计算 CRC32
+    let crc = 0xffffffff;
+    for (const f of bundle.files) {
+      const u = new Uint8Array(f);
+      for (let i = 0; i < u.length; i++) {
+        crc = (crc >>> 8) ^ CRC32_TABLE[(crc ^ u[i]) & 0xff];
+      }
+    }
+    crc = (crc ^ 0xffffffff) >>> 0;
+    if (crc === targetCrc) return false; // 数据未修改，天然满足
+
+    const patch = computeCrc32Patch(crc, targetCrc);
+
+    const idx = bundle.nodes.findIndex(n => n.path.endsWith('.resS'));
+    if (idx === -1) {
+      console.warn(
+        `[encryptBundleToKh] bundle 无 .resS 流节点，无法安全追加 CRC 补丁（文件名 ${fileName}）`,
+      );
+      return false;
+    }
+
+    const old = new Uint8Array(bundle.files[idx]);
+    const withPatch = new Uint8Array(old.length + 4);
+    withPatch.set(old, 0);
+    new DataView(withPatch.buffer).setUint32(old.length, patch, true);
+    bundle.files[idx] = withPatch.buffer;
+    return true;
   }
 
   private createObjPathGetter(groupMethod: ExportGroupMethod): ObjectPathGetter {

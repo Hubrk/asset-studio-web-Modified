@@ -417,7 +417,7 @@ export function encryptUnityFsToKh(
 // 这是之前缺失的"尾部 4 字节校验数据"的真正算法。
 
 /** 标准 CRC32 表（多项式 0xEDB88320），与 C# BuildCrc32Table 一致。 */
-const CRC32_TABLE: Uint32Array = (() => {
+export const CRC32_TABLE: Uint32Array = (() => {
   const table = new Uint32Array(256);
   for (let i = 0; i < 256; i++) {
     let c = i;
@@ -552,24 +552,18 @@ export function fixUnityCrcInPlace(unityFs: ArrayBuffer, fileName: string): Arra
   new DataView(data.buffer, data.byteOffset + sizeOffset, 8)
     .setBigUint64(0, BigInt(recordedFileSize + 4), false);
 
-  // 8. 在 blocksInfo 中把旧 blockDataSize 替换为 blockDataSize+4
-  // C# 在 blocksInfo 区域（headerEnd 到 blockDataStart）搜索旧 blockDataSize 的 BE 字节，替换为新值
-  const oldSizeBytes = new Uint8Array(4);
-  new DataView(oldSizeBytes.buffer).setUint32(0, blockDataLen, false);
-  const newSizeBytes = new Uint8Array(4);
-  new DataView(newSizeBytes.buffer).setUint32(0, blockDataLen + 4, false);
-  for (let j = blocksInfoStart; j <= blockDataStart - 4; j++) {
-    let match2 = true;
-    for (let k = 0; k < 4; k++) {
-      if (data[j + k] !== oldSizeBytes[k]) { match2 = false; break; }
-    }
-    if (match2) {
-      data[j] = newSizeBytes[0];
-      data[j + 1] = newSizeBytes[1];
-      data[j + 2] = newSizeBytes[2];
-      data[j + 3] = newSizeBytes[3];
-    }
-  }
+  // 8. 不修改 blocksInfo 中块的尺寸（原 C# 会把 blockDataSize +4）。
+  //
+  // 字节实证（对照游戏实测样本）：
+  //   - 不压缩导出（游戏正常，如 2137173546_encrypd (5)）：4 字节 CRC 补丁位于
+  //     块区域之后的文件尾部，块的 un/co 均未 +4 —— 游戏接受这种形态。
+  //   - 压缩导出（游戏损坏，如 2137173546_modifi (3)）：原步骤 8 把单块
+  //     compressedSize +4（blocksInfo 压缩流中尺寸数字以 literal 明文出现，
+  //     搜索可命中），4 字节补丁因此被计入 LZ4 压缩块内部 → 解码器过读到
+  //     uncompressedSize 之外 → 游戏判定资源损坏。
+  // 因此保持块尺寸不变，让补丁落在所有块数据之后的文件尾部（与实测正常的
+  // 不压缩导出形态一致）。步骤 10 的 CRC 校验范围 [blockDataStart,
+  // blockDataLen+4) 仍完整覆盖这 4 字节补丁，校验数学不变。
 
   // 9. 追加 4 字节补丁（小端，与 C# BitConverter.GetBytes 一致）
   const result = new Uint8Array(data.length + 4);
@@ -583,4 +577,19 @@ export function fixUnityCrcInPlace(unityFs: ArrayBuffer, fileName: string): Arra
   }
 
   return result.buffer;
+}
+
+// ==================== 明文数据 CRC 补丁（压缩前应用）====================
+
+/**
+ * CRC32 逆推：计算 4 字节补丁值，使 CRC32(data + patchLE) == targetCrc。
+ * 与魔改版 UABEA FixUnityCrcInPlace 的 32 步逆推公式一致。
+ */
+export function computeCrc32Patch(actualCrc: number, targetCrc: number): number {
+  let num = (targetCrc ^ 0xffffffff) >>> 0;
+  for (let i = 0; i < 32; i++) {
+    if (num & 0x80000000) num = (((num ^ 0xedb88320) << 1) | 1) >>> 0;
+    else num = (num << 1) >>> 0;
+  }
+  return (num ^ (actualCrc ^ 0xffffffff)) >>> 0;
 }
