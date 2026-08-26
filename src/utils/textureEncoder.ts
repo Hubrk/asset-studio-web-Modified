@@ -270,7 +270,12 @@ const encodeBc7: EncodeFunction = (rgba, width, height) => {
           idx = 0;
         } else {
           // 投影到端点方向，计算最优插值权重 [0, 1]
-          const t = ((px[0] - er0) * dr + (px[1] - eg0) * dg + (px[2] - eb0) * db + (px[3] - ea0) * da) / dd;
+          // 将 8-bit 像素值扩展到 9-bit（匹配端点重建公式 (ep7<<1)|P）
+          const pr = (px[0] << 1) | (px[0] >> 7);
+          const pg = (px[1] << 1) | (px[1] >> 7);
+          const pb = (px[2] << 1) | (px[2] >> 7);
+          const pa = (px[3] << 1) | (px[3] >> 7);
+          const t = ((pr - er0) * dr + (pg - eg0) * dg + (pb - eb0) * db + (pa - ea0) * da) / dd;
           // 量化到 0-15
           idx = Math.max(0, Math.min(15, Math.round(t * 15)));
         }
@@ -302,7 +307,10 @@ const writeAstcVoidExtent = (output: Uint8Array, off: number, r: number, g: numb
   let bits = 0n;
   bits |= 0x1fcn;
   bits |= 0b10n << 9n;
-  bits |= ((1n << 53n) - 1n) << 11n;
+  // bits [61:11] = 坐标字段全 1（51 bits）
+  bits |= ((1n << 51n) - 1n) << 11n;
+  // bits [63:62] = dimension-1 全 1（2 bits）
+  bits |= 0b11n << 62n;
   bits |= BigInt((r << 8) | r) << 64n;
   bits |= BigInt((g << 8) | g) << 80n;
   bits |= BigInt((b << 8) | b) << 96n;

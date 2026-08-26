@@ -831,7 +831,7 @@ const handleApply = async () => {
       canvas.height,
       fmt,
       generateMips.value,
-      false, // 画布已包含锐化预览结果，worker 不再二次锐化
+      0, // 画布已包含锐化预览结果，worker 不再重复锐化
     );
     if (ok) {
       originalImageData.value = ctx.getImageData(0, 0, canvas.width, canvas.height);

@@ -1,5 +1,6 @@
 import { TextureFormat } from '@arkntools/unity-js';
 import { defineStore } from 'pinia';
+import { markRaw } from 'vue';
 import { useBackgroundRemoval } from '@/composables/useBackgroundRemoval';
 import { useTfjsBgRemoval } from '@/composables/useTfjsBgRemoval';
 import { useFastBgRemoval } from '@/composables/useFastBgRemoval';
@@ -88,6 +89,19 @@ export interface AssetMatchTaskItem {
   error?: string;
 }
 
+export interface AvatarExtractTaskItem {
+  /** 来源图片文件名（含扩展名） */
+  sourceFileName: string;
+  /** 来源图片相对输入目录的路径 */
+  sourceRelPath: string;
+  /** 输出头像文件名 = 原名 + 后缀 + .png */
+  outputFileName: string;
+  /** 检测到的头像框，如 "left,top,167x167"（未检测到为空） */
+  box: string;
+  status: 'pending' | 'extracting' | 'writing' | 'done' | 'error' | 'skipped';
+  error?: string;
+}
+
 export interface BatchWorkflowState {
   inputDirHandle: FileSystemDirectoryHandle | null;
   outputDirHandle: FileSystemDirectoryHandle | null;
@@ -99,6 +113,18 @@ export interface BatchWorkflowState {
   removeBgMaxSize: number;
   /** 兜底裁剪比例（0-1，表示裁剪下方百分比，默认 0.13 = 13%） */
   fallbackCropRatio: number;
+  /** 兜底裁剪方向：'bottom'=保留顶部裁下方 | 'top'=保留底部裁上方 | 'center'=居中裁上下 */
+  fallbackCropDirection: 'bottom' | 'top' | 'center';
+  /** 启用通用裁剪：对全部图片都按兜底比例裁剪（不再依赖 isFallback/比例差/Portrait 条件） */
+  universalCrop: boolean;
+  /** 批量换图：跳过纹理关键词（命中任一关键词的纹理在预览/执行时跳过，不替换） */
+  skipKeywords: string[];
+  /** 批量换图：跳过关键词匹配模式 */
+  skipMatchMode: MatchMode;
+  /** 批量换图：跳过关键词是否忽略大小写 */
+  skipCaseInsensitive: boolean;
+  /** 批量换图：本次预览中被关键词跳过的纹理清单（用于 UI 反馈） */
+  skippedTextures: string[];
   /** 每批处理的最上层文件夹数量（exportTextures 模式） */
   batchSize: number;
   tasks: BatchTaskItem[];
@@ -107,7 +133,7 @@ export interface BatchWorkflowState {
   /** 分辨率筛选模式的任务列表 */
   filterResolutionTasks: FilterResolutionTaskItem[];
   /** 当前模式 */
-  mode: 'replace' | 'exportTextures' | 'filterByResolution' | 'imageMatchAndCopy' | 'assetMatchAndCopy';
+  mode: 'replace' | 'exportTextures' | 'filterByResolution' | 'imageMatchAndCopy' | 'assetMatchAndCopy' | 'extractAvatar';
   /** 分辨率筛选模式：用户输入的目标分辨率列表 */
   filterResolutions: string[];
   /** 分辨率筛选模式：用户输入的纹理名称关键词列表 */
@@ -144,6 +170,18 @@ export interface BatchWorkflowState {
   assetMatchUnmatched: string[];
   /** 资产匹配复制模式：跳过重复的文件夹数 */
   assetMatchSkipCount: number;
+  /** 头像提取模式：文件名关键词过滤（默认 generated） */
+  extractAvatarKeyword: string;
+  /** 头像提取模式：匹配的图片格式，逗号分隔（默认 jpg,png,webp） */
+  extractAvatarExts: string;
+  /** 头像提取模式：输出头像文件名后缀（默认 _headshot_140x140） */
+  extractAvatarSuffix: string;
+  /** 头像提取模式：输出头像边长（默认 140） */
+  extractAvatarSize: number;
+  /** 头像提取模式：截取比例（以图片短边的百分比作为方形边长，默认 40%） */
+  extractAvatarRatio: number;
+  /** 头像提取模式：任务列表 */
+  extractAvatarTasks: AvatarExtractTaskItem[];
   isRunning: boolean;
   currentTaskIndex: number;
   /** 当前批次索引（0-based），-1 表示未开始 */
@@ -160,6 +198,10 @@ export interface BatchWorkflowState {
 const BUNDLE_EXT_RE = /\.(?:assetbundle|ab)$/i;
 const IMAGE_EXT_RE = /\.(?:png|jpg|jpeg)$/i;
 
+// ===== 头像提取算法常量 =====
+/** 非白阈值：三通道均 >= 245 视为白色背景，转为透明 */
+const AVATAR_THRESHOLD = 245;
+
 export const useBatchWorkflow = defineStore('batchWorkflow', () => {
   const assetManager = useAssetManager();
   // composable 必须在 setup 顶部调用，不能在函数内
@@ -171,18 +213,22 @@ export const useBatchWorkflow = defineStore('batchWorkflow', () => {
   const inputDirHandle = shallowRef<FileSystemDirectoryHandle | null>(null);
   const outputDirHandle = shallowRef<FileSystemDirectoryHandle | null>(null);
   const enableRemoveBg = ref(false);
-  /** 抠图模型选择：'onnx' = RMBG-1.4, 'tfjs' = Removebg 1.6, 'fast' = Removebg 1.5 Fast */
-  const removeBgModelType = ref<'onnx' | 'tfjs' | 'fast'>('onnx');
-  const targetFormat = ref<TextureFormat | -1>(TextureFormat.RGBA32);
+  /** 抠图模型选择：'onnx' = RMBG-1.4, 'tfjs' = Removebg 1.6, 'fast' = Removebg 1.5 Fast（默认 fast：权重已内置仓库、纯离线可用） */
+  const removeBgModelType = ref<'onnx' | 'tfjs' | 'fast'>('fast');
+  // 默认「保持原格式」(-1)：游戏对帧动画图集纹理格式有要求，默认改格式会导致写回后资源损坏。
+  // 用户显式选择其他格式时才转换（如 RGBA32/ASTC），并自行承担游戏兼容性风险。
+  const targetFormat = ref<TextureFormat | -1>(-1);
   const generateMips = ref(false);
   const removeBgThreshold = ref(128);
   const removeBgFeather = ref(true);
   const removeBgMaxSize = ref(1024);
   const fallbackCropRatio = ref(0.13);
-  /** 兜底裁剪方向：'bottom'=保留顶部裁下方（默认）| 'top'=保留底部裁上方 | 'center'=居中裁上下 */
   const fallbackCropDirection = ref<'bottom' | 'top' | 'center'>('bottom');
-  /** 启用通用裁剪：对所有图片都按兜底比例裁剪（不再需要 isFallback/比例差/Portrait 条件） */
   const universalCrop = ref(false);
+  const skipKeywords = ref<string[]>([]);
+  const skipMatchMode = ref<MatchMode>('contains');
+  const skipCaseInsensitive = ref(true);
+  const skippedTextures = ref<string[]>([]);
   const batchSize = ref(100);
   const matchSuffix = ref('_generated');
   /** 导出纹理模式：是否在文件名中加入 bundle 资产文件名 */
@@ -191,7 +237,7 @@ export const useBatchWorkflow = defineStore('batchWorkflow', () => {
   const tasks = ref<BatchTaskItem[]>([]);
   const exportTextureTasks = ref<ExportTextureTaskItem[]>([]);
   const filterResolutionTasks = ref<FilterResolutionTaskItem[]>([]);
-  const mode = ref<'replace' | 'exportTextures' | 'filterByResolution' | 'imageMatchAndCopy' | 'assetMatchAndCopy'>('replace');
+  const mode = ref<'replace' | 'exportTextures' | 'filterByResolution' | 'imageMatchAndCopy' | 'assetMatchAndCopy' | 'extractAvatar'>('replace');
   const filterResolutions = ref<string[]>([]);
   const filterTextureNames = ref<string[]>([]);
   const filterLogic = ref<'and' | 'or'>('and');
@@ -215,6 +261,15 @@ export const useBatchWorkflow = defineStore('batchWorkflow', () => {
   const assetMatchFolderHandles = new Map<number, FileSystemDirectoryHandle>();
   /** 非响应式 Map：任务索引 → 来源图片所在目录 handle（用于写入 .assetbundle） */
   const assetMatchSourceDirHandles = new Map<number, FileSystemDirectoryHandle>();
+  // === 头像提取模式 state ===
+  const extractAvatarKeyword = ref('generated');
+  const extractAvatarExts = ref('jpg,png,webp');
+  const extractAvatarSuffix = ref('_headshot_140x140');
+  const extractAvatarSize = ref(140);
+  const extractAvatarRatio = ref(40);
+  const extractAvatarTasks = ref<AvatarExtractTaskItem[]>([]);
+  /** 非响应式 Map：来源图片相对路径 → 所在目录 handle（写回同目录用） */
+  const extractAvatarDirHandles = new Map<string, FileSystemDirectoryHandle>();
   const isRunning = ref(false);
   const currentTaskIndex = ref(-1);
   const currentBatchIndex = ref(-1);
@@ -301,6 +356,46 @@ export const useBatchWorkflow = defineStore('batchWorkflow', () => {
 
   const setFilterLogic = (logic: 'and' | 'or') => {
     filterLogic.value = logic;
+  };
+
+  // ===== 批量换图：跳过纹理关键词 =====
+  /** 添加跳过关键词（自动去重、去空白） */
+  const addSkipKeyword = (raw: string): boolean => {
+    const kw = raw.trim();
+    if (!kw) return false;
+    if (skipKeywords.value.includes(kw)) return false;
+    skipKeywords.value = [...skipKeywords.value, kw];
+    return true;
+  };
+
+  const removeSkipKeyword = (index: number) => {
+    skipKeywords.value = skipKeywords.value.filter((_, i) => i !== index);
+  };
+
+  const clearSkipKeywords = () => {
+    skipKeywords.value = [];
+  };
+
+  /** 判断纹理名是否命中任一跳过关键词（命中则返回 true，不替换） */
+  const shouldSkipTexture = (name: string): boolean => {
+    const kws = skipKeywords.value;
+    if (!kws.length) return false;
+    const mode = skipMatchMode.value;
+    const ci = skipCaseInsensitive.value;
+    for (const raw of kws) {
+      const kw = raw.trim();
+      if (!kw) continue;
+      if (mode === 'regex') {
+        try {
+          if (new RegExp(kw, ci ? 'i' : '').test(name)) return true;
+        } catch {
+          // 非法正则忽略
+        }
+      } else if (matchName(name, kw, { mode, caseInsensitive: ci })) {
+        return true;
+      }
+    }
+    return false;
   };
 
   const initRemoveBgModel = () => {
@@ -490,10 +585,21 @@ export const useBatchWorkflow = defineStore('batchWorkflow', () => {
       }
     }
 
-    matchedResults.value = allMatches;
+    // 跳过关键词：命中的匹配不进入任务列表（仍计入 matchedResults 供参考）
+    const keptMatches: MatchResult[] = [];
+    const skippedList: string[] = [];
+    for (const m of allMatches) {
+      if (shouldSkipTexture(m.textureName)) {
+        skippedList.push(`${m.bundleFileName} :: ${m.textureName}`);
+      } else {
+        keptMatches.push(m);
+      }
+    }
+    skippedTextures.value = skippedList;
+    matchedResults.value = keptMatches;
     unmatchedImages.value = unmatchedImgs;
     unmatchedTextures.value = unmatchedTexs;
-    tasks.value = allMatches.map(m => ({
+    tasks.value = keptMatches.map(m => ({
       bundleFileName: m.bundleFileName,
       textureName: m.textureName,
       imageName: m.imageName,
@@ -504,7 +610,7 @@ export const useBatchWorkflow = defineStore('batchWorkflow', () => {
     }));
     totalProgress.value = 0;
     currentTaskIndex.value = -1;
-    stageText.value = `匹配完成：${allMatches.length} 项（${dirToFiles.size} 个文件夹），未匹配图片 ${unmatchedImgs.length}，未匹配纹理 ${unmatchedTexs.length}`;
+    stageText.value = `匹配完成：${keptMatches.length} 项（${dirToFiles.size} 个文件夹），已跳过 ${skippedList.length} 个命中关键词纹理，未匹配图片 ${unmatchedImgs.length}，未匹配纹理 ${unmatchedTexs.length}`;
   };
 
   /**
@@ -1209,11 +1315,30 @@ export const useBatchWorkflow = defineStore('batchWorkflow', () => {
       }
     }
 
+    // 分批处理（镜像导出模式）：markRaw 包装任务避免逐任务触发响应式，
+    // 每批结束统一刷新 tasks + 让出主线程，避免 2000 任务时表格每任务重渲染卡顿
+    const bSize = Math.max(1, batchSize.value);
+    const totalBatches = Math.max(1, Math.ceil(total / bSize));
+    totalBatchCount.value = totalBatches;
+    const localTasks = tasks.value.map(t => markRaw({ ...t }));
+
     try {
-      for (let i = 0; i < total; i++) {
+      for (let bi = 0; bi < totalBatches; bi++) {
         if (!isRunning.value) break;
-        const task = tasks.value[i];
-        currentTaskIndex.value = i;
+        currentBatchIndex.value = bi;
+        const startIdx = bi * bSize;
+        const endIdx = Math.min(startIdx + bSize, total);
+        for (let i = startIdx; i < endIdx; i++) {
+          if (!isRunning.value) break;
+          const task = localTasks[i];
+          currentTaskIndex.value = i;
+
+          // 跳过关键词：命中则不替换，标记为 skipped 直接跳过（防御：关键词可在预览后变更）
+          if (shouldSkipTexture(task.textureName)) {
+            task.status = 'skipped';
+            task.error = '命中跳过关键词';
+            continue;
+          }
 
         try {
           // a. 读取图片（用 basePath + imageName 构造完整路径查找）
@@ -1242,7 +1367,7 @@ export const useBatchWorkflow = defineStore('batchWorkflow', () => {
             });
           }
 
-          // b1. 裁剪：通用裁剪（所有图）或兜底裁剪（比例差大且含 Portrait 关键词）
+          // b1. 裁剪：通用裁剪（全部图片）或兜底匹配裁剪（isFallback 且比例差大且含 Portrait 关键词）
           // 方向由 fallbackCropDirection 控制：bottom=保留顶部裁下方 / top=保留底部裁上方 / center=居中裁上下
           const cropDimKey = `${task.bundleFileName}|${task.pathId}`;
           const cropOrigDims = textureDimMap.get(cropDimKey);
@@ -1262,9 +1387,8 @@ export const useBatchWorkflow = defineStore('batchWorkflow', () => {
                 : fallbackCropDirection.value === 'center'
                   ? Math.floor((imageData.height - cropH) / 2)
                   : 0;
-            // 用数组切片截取 [offsetY, offsetY+cropH) 区域——不依赖 putImageData 的
-            // dirty 参数语义（部分 canvas 实现下 dirty 行为不一致会导致 top/center 错乱），
-            // 纯内存操作，方向必然正确。
+            // 纯内存数组切片截取 [offsetY, offsetY+cropH) —— 不依赖 putImageData 的 dirty 参数
+            // 语义（部分 canvas 实现下 dirty 行为不一致会导致 top/center 错乱），方向必然正确。
             const rowBytes = imageData.width * 4;
             const outData = new Uint8ClampedArray(rowBytes * cropH);
             for (let r = 0; r < cropH; r++) {
@@ -1323,6 +1447,7 @@ export const useBatchWorkflow = defineStore('batchWorkflow', () => {
             h,
             targetFmt,
             generateMips.value,
+            assetManager.sharpen,
           );
           if (!ok) throw new Error('modifyTexture2D 返回 false');
 
@@ -1355,12 +1480,18 @@ export const useBatchWorkflow = defineStore('batchWorkflow', () => {
           task.error = String(e);
           console.error(`[BatchWorkflow] task ${i} (${task.imageName}) failed:`, e);
         }
-        totalProgress.value = (i + 1) / total;
+          totalProgress.value = (i + 1) / total;
+        }
+        // 批次结束：统一刷新 UI + 让出主线程 50ms，给浏览器渲染与 GC 时间
+        tasks.value = [...localTasks];
+        await new Promise<void>(resolve => setTimeout(resolve, 50));
       }
+      tasks.value = [...localTasks];
       stageText.value = isRunning.value ? '批量处理完成' : '已取消';
     } finally {
       isRunning.value = false;
       currentTaskIndex.value = -1;
+      currentBatchIndex.value = -1;
     }
   };
 
@@ -1805,19 +1936,260 @@ export const useBatchWorkflow = defineStore('batchWorkflow', () => {
     }
   };
 
+  // ===== 头像提取模式 =====
+
+  /**
+   * 递归扫描输入目录中的图片文件（按关键词 + 扩展名过滤，跳过本模式自身的输出文件）
+   * 返回带所在目录 handle 的图片列表
+   */
+  const scanImagesWithDir = async (
+    dirHandle: FileSystemDirectoryHandle,
+    basePath = '',
+  ): Promise<Array<{ relPath: string; file: File; dirHandle: FileSystemDirectoryHandle }>> => {
+    const result: Array<{ relPath: string; file: File; dirHandle: FileSystemDirectoryHandle }> = [];
+    const exts = new Set(
+      extractAvatarExts.value
+        .split(',')
+        .map(e => e.trim().toLowerCase().replace(/^\./, ''))
+        .filter(Boolean),
+    );
+    const keyword = extractAvatarKeyword.value.trim().toLowerCase();
+    const outSuffix = extractAvatarSuffix.value.trim().toLowerCase();
+    for await (const [name, handle] of dirHandle.entries()) {
+      const fullPath = basePath ? `${basePath}/${name}` : name;
+      if (handle.kind === 'directory') {
+        const sub = await scanImagesWithDir(handle as FileSystemDirectoryHandle, fullPath);
+        result.push(...sub);
+      } else if (handle.kind === 'file') {
+        const ext = name.toLowerCase().replace(/^.*\./, '');
+        // 关键词过滤 + 扩展名过滤 + 排除自身输出文件（避免嵌套处理，与 avatar_batch.py 一致）
+        if (!exts.has(ext)) continue;
+        if (keyword && !name.toLowerCase().includes(keyword)) continue;
+        if (outSuffix && name.toLowerCase().includes(outSuffix)) continue;
+        const file = await (handle as FileSystemFileHandle).getFile();
+        result.push({ relPath: fullPath, file, dirHandle });
+      }
+    }
+    return result;
+  };
+
+  /**
+   * 从图片文件提取左上角头像（固定比例裁剪）
+   * 流程：从左上角按「短边 × 比例」切出方形 → 白底转透明 → 缩放到 size x size → PNG blob
+   * 不做内容检测，每张可解码的图片都会输出
+   */
+  const extractAvatarFromFile = async (
+    file: File,
+    size: number,
+    ratioPercent: number,
+  ): Promise<{ blob: Blob | null; box: string | null; reason?: string }> => {
+    let bitmap: ImageBitmap | null = null;
+    try {
+      bitmap = await createImageBitmap(file);
+    } catch {
+      return { blob: null, box: null, reason: '无法解码图片' };
+    }
+    try {
+      const w = bitmap.width;
+      const h = bitmap.height;
+      if (w < 32 || h < 32) return { blob: null, box: null, reason: '图片尺寸过小' };
+
+      // 固定比例方形边长 = 短边 × 比例，并防越界
+      const side = Math.min(Math.floor(Math.min(w, h) * (ratioPercent / 100)), w, h);
+
+      // 1) 从左上角切出方形
+      const cropCanvas = new OffscreenCanvas(side, side);
+      const cropCtx = cropCanvas.getContext('2d', { willReadFrequently: true })!;
+      cropCtx.drawImage(bitmap, 0, 0, side, side, 0, 0, side, side);
+
+      // 2) 白底转透明：三通道均 >= 阈值（245）→ alpha = 0
+      const cropImg = cropCtx.getImageData(0, 0, side, side);
+      for (let i = 0; i < cropImg.data.length; i += 4) {
+        if (
+          cropImg.data[i] >= AVATAR_THRESHOLD &&
+          cropImg.data[i + 1] >= AVATAR_THRESHOLD &&
+          cropImg.data[i + 2] >= AVATAR_THRESHOLD
+        ) {
+          cropImg.data[i + 3] = 0;
+        }
+      }
+      cropCtx.putImageData(cropImg, 0, 0);
+
+      // 3) 缩放到目标边长（高质量平滑）
+      const outCanvas = new OffscreenCanvas(size, size);
+      const outCtx = outCanvas.getContext('2d')!;
+      outCtx.imageSmoothingEnabled = true;
+      outCtx.imageSmoothingQuality = 'high';
+      outCtx.drawImage(cropCanvas, 0, 0, side, side, 0, 0, size, size);
+
+      const blob = await outCanvas.convertToBlob({ type: 'image/png' });
+      return { blob, box: `0,0,${side}x${side}` };
+    } finally {
+      bitmap.close();
+    }
+  };
+
+  /** 头像提取：扫描预览（仅收集文件列表，不解码图片） */
+  const previewExtractAvatar = async () => {
+    const dirHandle = inputDirHandle.value;
+    if (!dirHandle) {
+      ElMessage({ message: '请先选择输入目录', type: 'warning' });
+      return;
+    }
+
+    stageText.value = '正在递归扫描输入目录中的图片...';
+    extractAvatarDirHandles.clear();
+    const entries = await scanImagesWithDir(dirHandle);
+
+    if (!entries.length) {
+      ElMessage({
+        message: `未找到匹配的图片（关键词 '${extractAvatarKeyword.value}'，格式 ${extractAvatarExts.value}）`,
+        type: 'warning',
+      });
+      stageText.value = '';
+      extractAvatarTasks.value = [];
+      return;
+    }
+
+    // 稳定排序（与 Python files.sort() 一致）
+    entries.sort((a, b) => (a.relPath < b.relPath ? -1 : a.relPath > b.relPath ? 1 : 0));
+    for (const e of entries) extractAvatarDirHandles.set(e.relPath, e.dirHandle);
+
+    const size = Math.max(16, Math.floor(extractAvatarSize.value) || 140);
+    extractAvatarTasks.value = entries.map(e => {
+      const stem = e.file.name.replace(/\.[^.]+$/, '');
+      return {
+        sourceFileName: e.file.name,
+        sourceRelPath: e.relPath,
+        outputFileName: `${stem}${extractAvatarSuffix.value}.png`,
+        box: '',
+        status: 'pending' as const,
+      };
+    });
+
+    totalProgress.value = 0;
+    currentTaskIndex.value = -1;
+    stageText.value = `扫描完成：${entries.length} 张图片待提取（输出 ${size}x${size} PNG 到原图同目录）`;
+  };
+
+  /** 头像提取：分批执行（沿用 batchSize 分批 + markRaw + 批次间让出主线程） */
+  const runExtractAvatar = async () => {
+    if (isRunning.value) return;
+    if (!extractAvatarTasks.value.length) {
+      ElMessage({ message: '没有可执行的任务，请先扫描预览', type: 'warning' });
+      return;
+    }
+
+    // 预请求所有涉及目录的 readwrite 权限（必须在用户激活上下文中调用）
+    const uniqueDirs = new Set<FileSystemDirectoryHandle>();
+    for (const task of extractAvatarTasks.value) {
+      const handle = extractAvatarDirHandles.get(task.sourceRelPath);
+      if (handle) uniqueDirs.add(handle);
+    }
+    for (const dir of uniqueDirs) {
+      if ((await dir.queryPermission({ mode: 'readwrite' })) !== 'granted') {
+        const result = await dir.requestPermission({ mode: 'readwrite' });
+        if (result !== 'granted') {
+          ElMessage({ message: '目录权限被拒绝，无法写入文件', type: 'error' });
+          return;
+        }
+      }
+    }
+
+    isRunning.value = true;
+    const total = extractAvatarTasks.value.length;
+    const size = Math.max(16, Math.floor(extractAvatarSize.value) || 140);
+    const ratio = Math.min(100, Math.max(1, extractAvatarRatio.value || 25));
+
+    const bSize = Math.max(1, batchSize.value);
+    const totalBatches = Math.max(1, Math.ceil(total / bSize));
+    totalBatchCount.value = totalBatches;
+    const localTasks = extractAvatarTasks.value.map(t => markRaw({ ...t }));
+
+    let okCount = 0, skipCount = 0, failCount = 0;
+
+    try {
+      let globalIdx = 0;
+      for (let bi = 0; bi < totalBatches; bi++) {
+        if (!isRunning.value) break;
+        currentBatchIndex.value = bi;
+        const startIdx = bi * bSize;
+        const endIdx = Math.min(startIdx + bSize, total);
+
+        for (let i = startIdx; i < endIdx; i++) {
+          if (!isRunning.value) break;
+          const task = localTasks[i];
+          currentTaskIndex.value = globalIdx;
+
+          try {
+            task.status = 'extracting';
+            stageText.value = `[批次 ${bi + 1}/${totalBatches}] [${globalIdx + 1}/${total}] 正在提取：${task.sourceRelPath}`;
+
+            const dirHandle = extractAvatarDirHandles.get(task.sourceRelPath);
+            if (!dirHandle) throw new Error(`找不到图片所在目录：${task.sourceRelPath}`);
+            const fileHandle = await dirHandle.getFileHandle(task.sourceFileName);
+            const file = await fileHandle.getFile();
+
+            const { blob, box, reason } = await extractAvatarFromFile(file, size, ratio);
+
+            if (!blob) {
+              // 未检测到方形头像：跳过（不报错、不中断批量）
+              task.status = 'skipped';
+              task.error = reason;
+              skipCount++;
+            } else {
+              task.box = box || '';
+              task.status = 'writing';
+              const outFileHandle = await dirHandle.getFileHandle(task.outputFileName, { create: true });
+              const writable = await outFileHandle.createWritable();
+              await writable.write(blob);
+              await writable.close();
+              task.status = 'done';
+              okCount++;
+            }
+          } catch (e) {
+            task.status = 'error';
+            task.error = String(e);
+            failCount++;
+            console.error(`[BatchWorkflow] extractAvatar task ${i} (${task.sourceRelPath}) failed:`, e);
+          }
+
+          totalProgress.value = (globalIdx + 1) / total;
+          currentTaskIndex.value = globalIdx;
+          globalIdx++;
+        }
+
+        // 批次结束：触发响应式更新 + 让出主线程，让浏览器刷新 UI 和回收内存
+        extractAvatarTasks.value = [...localTasks];
+        await new Promise<void>(resolve => setTimeout(resolve, 50));
+      }
+
+      // 最终统一更新一次
+      extractAvatarTasks.value = [...localTasks];
+      stageText.value = isRunning.value
+        ? `提取完成：成功 ${okCount}，跳过(无头像) ${skipCount}，失败 ${failCount}`
+        : `已取消（成功 ${okCount}，跳过 ${skipCount}，失败 ${failCount}）`;
+    } finally {
+      isRunning.value = false;
+      currentTaskIndex.value = -1;
+    }
+  };
+
   const reset = () => {
     if (isRunning.value) return;
     inputDirHandle.value = null;
     outputDirHandle.value = null;
     enableRemoveBg.value = false;
-    targetFormat.value = TextureFormat.RGBA32;
+    targetFormat.value = -1;
     generateMips.value = false;
     removeBgThreshold.value = 128;
     removeBgFeather.value = true;
     removeBgMaxSize.value = 1024;
     fallbackCropRatio.value = 0.13;
-    fallbackCropDirection.value = 'bottom';
-    universalCrop.value = false;
+    skipKeywords.value = [];
+    skipMatchMode.value = 'contains';
+    skipCaseInsensitive.value = true;
+    skippedTextures.value = [];
     includeBundleName.value = false;
     tasks.value = [];
     exportTextureTasks.value = [];
@@ -1843,6 +2215,13 @@ export const useBatchWorkflow = defineStore('batchWorkflow', () => {
     assetMatchSkipCount.value = 0;
     assetMatchFolderHandles.clear();
     assetMatchSourceDirHandles.clear();
+    extractAvatarKeyword.value = 'generated';
+    extractAvatarExts.value = 'jpg,png,webp';
+    extractAvatarSuffix.value = '_headshot_140x140';
+    extractAvatarSize.value = 140;
+    extractAvatarRatio.value = 40;
+    extractAvatarTasks.value = [];
+    extractAvatarDirHandles.clear();
     matchedResults.value = [];
     unmatchedImages.value = [];
     unmatchedTextures.value = [];
@@ -1872,6 +2251,10 @@ export const useBatchWorkflow = defineStore('batchWorkflow', () => {
     fallbackCropRatio,
     fallbackCropDirection,
     universalCrop,
+    skipKeywords,
+    skipMatchMode,
+    skipCaseInsensitive,
+    skippedTextures,
     batchSize,
     matchSuffix,
     includeBundleName,
@@ -1897,6 +2280,12 @@ export const useBatchWorkflow = defineStore('batchWorkflow', () => {
     assetMatchSearchDirHandle,
     assetMatchTasks,
     assetMatchUnmatched,
+    extractAvatarKeyword,
+    extractAvatarExts,
+    extractAvatarSuffix,
+    extractAvatarSize,
+    extractAvatarRatio,
+    extractAvatarTasks,
     mode,
     isRunning,
     currentTaskIndex,
@@ -1926,6 +2315,9 @@ export const useBatchWorkflow = defineStore('batchWorkflow', () => {
     removeTextureName,
     clearTextureNames,
     setFilterLogic,
+    addSkipKeyword,
+    removeSkipKeyword,
+    clearSkipKeywords,
     initRemoveBgModel,
     previewMatch,
     run,
@@ -1939,6 +2331,8 @@ export const useBatchWorkflow = defineStore('batchWorkflow', () => {
     runImageMatch,
     setAssetMatchSearchDir,
     previewAssetMatch,
+    previewExtractAvatar,
+    runExtractAvatar,
     runAssetMatchCopy,
     cancel,
     reset,

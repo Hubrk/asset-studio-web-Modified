@@ -31,8 +31,10 @@ import AssetNoPreview from '@/components/AssetNoPreview.vue';
 import AssetSpineViewer from '@/components/AssetSpineViewer.vue';
 import AssetTextViewer from '@/components/AssetTextViewer.vue';
 import AssetTypeTreeViewer from '@/components/AssetTypeTreeViewer.vue';
+import AssetFrameAnimationViewer from '@/components/AssetFrameAnimationViewer.vue';
 import TextureEditor from '@/components/TextureEditor.vue';
 import TextAssetEditor from '@/components/TextAssetEditor.vue';
+import KfbAssetEditor from '@/components/KfbAssetEditor.vue';
 import TypeTreeEditor from '@/components/TypeTreeEditor.vue';
 import { useRefDebouncedConditional } from '@/hooks/useRef';
 import { useAssetManager } from '@/store/assetManager';
@@ -134,7 +136,7 @@ const previewDataAsync = computedAsync(
     if (type === PreviewType.None || (type === PreviewType.ImageList && !previewPayload.value)) return null;
     const data = await assetManager.loadPreviewData(
       info,
-      type === PreviewType.ImageList ? previewPayload.value : undefined,
+      type === PreviewType.ImageList || type === PreviewType.FrameAnimation ? previewPayload.value : undefined,
     );
     return data ?? null;
   },
@@ -155,6 +157,9 @@ const previewData = computed(() => (previewDataLoading.value ? null : previewDat
 const EditComponent = computed(() => {
   const info = assetManager.curAssetInfo;
   if (!info) return AssetNoPreview;
+
+  // KFB 战斗逻辑容器：独立编辑器（自动解密 XML + 密钥配置）
+  if (info.preview.type === PreviewType.Text && (info.preview as any).kfbContainer) return KfbAssetEditor;
 
   // Dedicated editors for specialized types
   if (info.preview.type === PreviewType.Text && (info.preview as any).canEdit) return TextAssetEditor;
@@ -182,6 +187,8 @@ const PreviewComponent = computed(() => {
           return AssetAudioViewer;
         case PreviewType.Spine:
           return AssetSpineViewer;
+        case PreviewType.FrameAnimation:
+          return AssetFrameAnimationViewer;
         default:
           return AssetNoPreview;
       }
