@@ -43,16 +43,18 @@ jobs:
         # 白名单：只跑不依赖本地素材/绝对路径的纯逻辑回归。
         # 其余大量 .test.ts 引用本机路径(C:/Users/...)或真实游戏 bundle，
         # 在 ubuntu CI 无法运行，留作本地回归（见项目记忆约定）。
-        run: bunx vitest run \
-          src/lz4_encoder.test.ts \
-          src/utils/__tests__/lz4_roundtrip.test.ts \
-          src/compression_export_regression.test.ts \
-          src/workers/assetManager/loaders/fsbWriter.test.ts \
-          src/workers/assetManager/loaders/fsbBank.test.ts \
-          src/utils/__tests__/khLoadable.test.ts \
-          src/utils/__tests__/texture_format_size.test.ts \
-          src/utils/__tests__/kfbApplyToAsset.test.ts \
-          src/utils/__tests__/kfbCustomMissingComponents.test.ts \
-          src/utils/__tests__/kfbRefs.test.ts \
-          src/utils/__tests__/kfbSkillModel.test.ts \
+        # 注意：单行空格分隔，勿用 \ 续行（bash 会把字面 \ 当参数传给 vitest）。
+        run: >-
+          bunx vitest run
+          src/lz4_encoder.test.ts
+          src/utils/__tests__/lz4_roundtrip.test.ts
+          src/compression_export_regression.test.ts
+          src/workers/assetManager/loaders/fsbWriter.test.ts
+          src/workers/assetManager/loaders/fsbBank.test.ts
+          src/utils/__tests__/khLoadable.test.ts
+          src/utils/__tests__/texture_format_size.test.ts
+          src/utils/__tests__/kfbApplyToAsset.test.ts
+          src/utils/__tests__/kfbCustomMissingComponents.test.ts
+          src/utils/__tests__/kfbRefs.test.ts
+          src/utils/__tests__/kfbSkillModel.test.ts
           src/utils/__tests__/kfbSync.test.ts
