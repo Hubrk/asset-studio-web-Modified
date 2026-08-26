@@ -6,8 +6,10 @@ import type { RepoDataHandler } from '@/types/repository';
 import { showBatchFilesResultMessage, showNotingCanBeExportToast } from '@/utils/toasts';
 import type { BatchFilesResult } from '@/utils/toasts';
 import { buildZipStore, type ZipEntry } from '@/utils/zipStore';
+import { expandArchives } from '@/utils/archive';
 import type { AssetInfo, ExportAssetsOnProgress, FileLoadingOnProgress } from '@/workers/assetManager';
 import AssetManagerWorker from '@/workers/assetManager/index.js?worker';
+import { decodeAudioFileToPcm } from '@/utils/audioDecode';
 import { useProgress } from './progress';
 import { useRepository } from './repository';
 import { useSetting } from './setting';
@@ -33,9 +35,9 @@ const buildExportName = (fileName: string, suffix: string): string => {
   return dot > 0 ? `${fileName.slice(0, dot)}_${suffix}${fileName.slice(dot)}` : `${fileName}_${suffix}`;
 };
 
-/** Trigger a browser download of an ArrayBuffer with the given file name. */
-const downloadArrayBuffer = (buffer: ArrayBuffer, downloadName: string) => {
-  const blob = new Blob([buffer], { type: 'application/octet-stream' });
+/** Trigger a browser download of an ArrayBuffer/Uint8Array with the given file name. */
+const downloadArrayBuffer = (buffer: ArrayBuffer | Uint8Array, downloadName: string) => {
+  const blob = new Blob([buffer as unknown as BlobPart], { type: 'application/octet-stream' });
   const url = URL.createObjectURL(blob);
   const a = document.createElement('a');
   a.href = url;
@@ -97,6 +99,15 @@ export const useAssetManager = defineStore('assetManager', () => {
     }),
   );
 
+  // 独立 FSB bank 子音频解码器（主线程 FMOD WASM，经 Comlink 回传 worker 调用）
+  AssetManager.setFsbSubConverter(
+    proxy(async (data: Uint8Array, size: number, channels: number, index: number, sampleRate?: number) => {
+      const { decodeFsbSubSound } = await import('@/utils/fsbDecode');
+      const wav = await decodeFsbSubSound(data, size, channels, index, sampleRate);
+      return transfer(wav as Uint8Array<ArrayBuffer>, [wav.buffer as ArrayBuffer]);
+    }),
+  );
+
   watch(
     () => setting.data.fsbConvertFormat,
     () => {
@@ -120,10 +131,12 @@ export const useAssetManager = defineStore('assetManager', () => {
     isLoading.value = true;
     curAssetInfo.value = undefined;
     try {
+      // 自动解压：遇到 .zip 先展开成内部文件，等价于直接拖入解压后的文件
+      const expanded = await expandArchives(files);
       const { errors, infos, successNum } = await (
         await manager
       ).loadFiles(
-        files,
+        expanded,
         {
           unityCNKey: setting.unityCNKey,
           env: setting.data.unityEnv,
@@ -132,12 +145,19 @@ export const useAssetManager = defineStore('assetManager', () => {
         onProgress,
       );
       assetInfos.value = infos;
+      // 导入含 FSB bank 时，自动选中 FSB Bank 资产直接进编辑器，
+      // 否则它会淹没在几十个子音频资产里，用户找不到「替换/导出 bank」入口
+      const bankInfo = infos.find(i => i.type === 'FsbBank');
+      if (bankInfo) curAssetInfo.value = bankInfo;
       if (!infos.length) {
+        const hasZip = files.some((f) => /\.zip$/i.test(f.name));
         ElMessage({
-          message: `未从 ${files.length} 个文件中加载到任何资产`,
+          message: hasZip
+            ? `未从压缩包中解析到任何可加载资产（已尝试自动解压 ${files.length} 个压缩包）`
+            : `未从 ${files.length} 个文件中加载到任何资产`,
           type: 'warning',
         });
-      } else if (files.length === 1 && errors.length) {
+      } else if (expanded.length === 1 && errors.length) {
         errors.forEach(({ name, error }) => {
           const msg = String(error);
           let displayMsg: string;
@@ -169,6 +189,7 @@ export const useAssetManager = defineStore('assetManager', () => {
 
   const clearFiles = async () => {
     assetInfos.value = [];
+    clearPreviewCache();
     await (await manager).clear();
   };
 
@@ -185,6 +206,7 @@ export const useAssetManager = defineStore('assetManager', () => {
   const loadSingleBundleSilently = async (file: File): Promise<AssetInfo[]> => {
     // 先清空 worker 内存，避免累积
     assetInfos.value = [];
+    clearPreviewCache();
     await (await manager).clear();
     // 强制取原始值：setting.unityCNKey 是 computed，setting.data 是 ref，
     // Pinia 访问时会自动解包；但为防止边界情况，用 typeof 兜底过滤
@@ -200,6 +222,21 @@ export const useAssetManager = defineStore('assetManager', () => {
     return result.infos;
   };
 
+  /**
+   * 辅助加载：将 bundle 加入 worker 会话（bundleMap），但不替换 assetInfos / curAssetInfo。
+   * 用于 KFB 编辑器侧载帧动画 bundle —— worker 的 getSessionSprites() 会自动聚合所有已加载 bundle 的 Sprite。
+   * 返回新加载的 AssetInfo[]，调用方可从中筛选 PreviewType.FrameAnimation 资产。
+   */
+  const loadBundlesAux = async (files: File[]): Promise<AssetInfo[]> => {
+    const expanded = await expandArchives(files);
+    const opts: AssetFileLoadOptions = {
+      unityCNKey: setting.unityCNKey,
+      env: setting.data.unityEnv,
+    };
+    const { infos } = await (await manager).loadFiles(markRaw(expanded), markRaw(opts));
+    return infos;
+  };
+
   const getDataHandler = async (info: AssetInfo) => {
     const { dataHandler } = repository;
     try {
@@ -211,8 +248,29 @@ export const useAssetManager = defineStore('assetManager', () => {
     }
   };
 
+  /**
+   * 预览数据缓存：避免反复切换资产时重复走 worker 解码、以及大数据 URL 经 postMessage 回传的延迟。
+   * 命中缓存时来回切换同一资产可即时呈现，消除"卡卡的、不及时的"观感。
+   * - previewVersion 计入缓存 key：纹理编辑保存后缓存自动失效，确保看到最新结果。
+   * - LRU 上限 16，超出淘汰最早条目，避免大图 data URL 无限占用内存。
+   */
+  const previewCache = new Map<string, string | null>();
+  const PREVIEW_CACHE_MAX = 16;
+  const clearPreviewCache = () => previewCache.clear();
+
   const loadPreviewData = async (info: AssetInfo, payload?: any) => {
-    return (await manager).getPreviewData(info.fileId, info.pathId, payload, await getDataHandler(info));
+    const cacheKey = `${info.fileId}:${info.pathId}:${payload ?? ''}:${previewVersion.value}`;
+    const cached = previewCache.get(cacheKey);
+    if (cached !== undefined) return cached;
+    const handler = await getDataHandler(info);
+    const data = await (await manager).getPreviewData(info.fileId, info.pathId, payload, handler);
+    const result = data ?? null;
+    if (previewCache.size >= PREVIEW_CACHE_MAX) {
+      const oldest = previewCache.keys().next().value;
+      if (oldest !== undefined) previewCache.delete(oldest);
+    }
+    previewCache.set(cacheKey, result);
+    return result;
   };
 
   const setCurAssetInfo = (info: AssetInfo) => {
@@ -434,17 +492,10 @@ export const useAssetManager = defineStore('assetManager', () => {
   const hasKhBundles = ref(false);
   const khBundleFileIds = ref<Set<string>>(new Set());
   const khFormat = ref<string>('UnityKHFS');
-
   /** 写回 bundle 压缩模式：0=NONE(默认,不压缩) | 2=LZ4 | 3=LZ4_HC(游戏兼容) */
   const compressionMode = ref<number>(0);
-
-  /** 批量写回纹理时应用锐化的强度：0=关闭，1=轻度，2=适中，3=较强（单图编辑在 UI 预览中自行应用，不依赖此值） */
+  /** 批量换图 / 纹理写回的锐化档位：0=不锐化，1-3=SHARPEN_PRESETS 档位（批量工作流 UI 使用） */
   const sharpen = ref<number>(0);
-
-  const setCompressionMode = async (mode: number) => {
-    compressionMode.value = mode;
-    await (await manager).setCompressionMode(mode);
-  };
 
   /** Track which fileIds have been modified (e.g., via Edit tab texture changes) */
   const modifiedFileIds = ref<Set<string>>(new Set());
@@ -492,6 +543,28 @@ export const useAssetManager = defineStore('assetManager', () => {
   };
 
   /**
+   * 设置写回 bundle 的压缩模式并同步到 worker。
+   * 3=LZ4_HC(默认,该游戏加载器只认 LZ4_HC) | 2=LZ4 | 0=NONE
+   */
+  const setCompressionMode = async (mode: number) => {
+    compressionMode.value = mode;
+    await (await manager).setCompressionMode(mode);
+  };
+
+  /**
+   * 将 bundle 恢复到最初加载时的原始字节（撤销所有修改）。
+   * 批量工作流专用：跨文件夹同内容 bundle 共享 fileId，每个任务导出前恢复，保证各任务输出独立。
+   */
+  const restoreBundle = async (fileId: string): Promise<boolean> => {
+    const ok = await (await manager).restoreBundle(fileId);
+    if (ok) {
+      modifiedFileIds.value.delete(fileId);
+      previewVersion.value++;
+    }
+    return ok;
+  };
+
+  /**
    * Modify a Texture2D's pixel data. Transfers the RGBA buffer to the worker
    * to avoid copying. After success, subsequent previews/exports will reflect
    * the modified texture.
@@ -504,8 +577,7 @@ export const useAssetManager = defineStore('assetManager', () => {
     height: number,
     targetFormat?: TextureFormat,
     generateMips?: boolean,
-    /** 单图编辑已在画布预览中应用锐化时为 false（避免 worker 二次锐化）；批量流程默认 true 用 sharpen.value */
-    useStoreSharpen = true,
+    sharpenLevel = 0,
   ): Promise<boolean> => {
     try {
       const result = await (await manager).modifyTexture2D(
@@ -516,7 +588,7 @@ export const useAssetManager = defineStore('assetManager', () => {
         height,
         targetFormat,
         generateMips,
-        useStoreSharpen ? sharpen.value : 0,
+        sharpenLevel,
       );
       if (result) {
         previewVersion.value++;
@@ -631,6 +703,58 @@ export const useAssetManager = defineStore('assetManager', () => {
     }
   };
 
+  /**
+   * 导出选中资产的内容为单个 ZIP（浏览器下载，无需目录选择器，Web/PWA 端可用）。
+   * 与 batchExportAsset（走 showDirectoryPicker，仅桌面端）互补：
+   * 这里把每个可导出资产的字节内容用 buildZipStore 打包后直接触发下载。
+   */
+  const exportAssetsAsZip = async (infos: AssetInfo[]) => {
+    const canExportRows = infos.filter(canExport);
+    if (!canExportRows.length) {
+      showNotingCanBeExportToast();
+      return;
+    }
+    isBatchExporting.value = true;
+    try {
+      const items: { fileName: string; data: Uint8Array }[] = [];
+      let errorCount = 0;
+      progressStore.setProgress({ type: 'exporting', desc: '正在打包选中资产' });
+      const exportedEncrypted = new Set<string>();
+      for (const info of canExportRows) {
+        // 已加密的 KH bundle：导出原加密整文件（一次即可，避免多选时重复）
+        if (await (await manager).isKhBundle(info.fileId)) {
+          if (exportedEncrypted.has(info.fileId)) continue;
+          exportedEncrypted.add(info.fileId);
+          const enc = await (await manager).getEncryptedBundleData(info.fileId);
+          if (enc) items.push({ fileName: enc.name, data: enc.data });
+          continue;
+        }
+        const data = await (await manager).getAssetExportData(info.fileId, info.pathId, await getDataHandler(info));
+        if (!data?.length) {
+          errorCount++;
+          continue;
+        }
+        for (const { name, data: bytes } of data) items.push({ fileName: name, data: bytes });
+      }
+      if (!items.length) {
+        if (errorCount > 0) {
+          ElMessage({ message: '打包失败：选中的资产均无法导出', type: 'error' });
+        }
+        return;
+      }
+      if (errorCount > 0) {
+        ElMessage({ message: `已打包 ${items.length} 个文件，${errorCount} 个导出失败`, type: 'warning' });
+      }
+      downloadArrayBuffer(buildZipStore(toUniqueZipEntries(items)), `assets_${formatTimestamp()}.zip`);
+    } catch (error) {
+      console.error(error);
+      ElMessage({ message: `打包导出失败：${error}`, type: 'error' });
+    } finally {
+      isBatchExporting.value = false;
+      progressStore.clearProgress();
+    }
+  };
+
   const exportAllModifiedBundles = async () => {
     const fileIds = modifiedFileIds.value.size
       ? modifiedFileIds.value
@@ -662,6 +786,128 @@ export const useAssetManager = defineStore('assetManager', () => {
     downloadArrayBuffer(buildZipStore(toUniqueZipEntries(items)), `modified_${formatTimestamp()}.zip`);
   };
 
+  /** FSB bank：用用户上传的音频替换某个子音频（主线程解码为 PCM16 后交给 worker 记录） */
+  const replaceFsbSample = async (
+    fileId: string,
+    index: number,
+    pcm: Int16Array,
+    channels: number,
+    sampleRate: number,
+  ): Promise<boolean> => {
+    try {
+      // 传副本给 worker（Comlink 会自动 transfer 其底层 buffer）；原件留在主线程供预览试听
+      const copy = pcm.slice();
+      await (await manager).setFsbSampleReplacement(fileId, index, copy, channels, sampleRate);
+      ElMessage({ message: `已替换样本 #${index}`, type: 'success' });
+      return true;
+    } catch (e) {
+      ElMessage({ message: `替换失败：${e}`, type: 'error' });
+      return false;
+    }
+  };
+
+  /** FSB bank：重打包并导出（.bank 写回容器，裸 FSB5 导出 FSB5） */
+  const exportFsbBank = async (info: AssetInfo) => {
+    try {
+      const result = await (await manager).exportFsbBank(info.fileId);
+      if (result) {
+        downloadArrayBuffer(result.data, result.name);
+      } else {
+        ElMessage({ message: '导出失败：bank 数据不可用', type: 'error' });
+      }
+    } catch (e) {
+      ElMessage({ message: `导出 bank 失败：${e}`, type: 'error' });
+    }
+  };
+
+  // ---------- KFB 战斗逻辑 ----------
+
+  /** KFB：解密 AssetBundle 并解析战斗数据（semantic/xml/runtime 三视图） */
+  const kfbDecode = async (
+    bytes: Uint8Array,
+    keyText: string,
+    wanted?: string,
+  ): Promise<{
+    name: string;
+    semantic: string;
+    xml: string;
+    runtime: string;
+    candidates: string[];
+  }> => {
+    // Comlink 传输大字节数组：transfer buffer
+    const transferable = bytes.slice().buffer as ArrayBuffer;
+    return (await manager).kfbDecode(transfer(bytes, [transferable]) as any, keyText, wanted);
+  };
+
+  /** KFB：编辑后的文本回编码 + 回加密，返回新 .assetbundle 字节 */
+  const kfbExportEncrypted = async (
+    originalBytes: Uint8Array,
+    keyText: string,
+    name: string,
+    text: string,
+    format: 'semantic' | 'xml' | 'runtime',
+  ): Promise<Uint8Array> => {
+    const transferable = originalBytes.slice().buffer as ArrayBuffer;
+    return (await manager).kfbExportEncrypted(transfer(originalBytes, [transferable]) as any, keyText, name, text, format);
+  };
+
+  /** KFB 内联：解密当前 TextAsset（返回 semantic + xml） */
+  const kfbDecodeAsset = async (
+    fileId: string,
+    pathId: bigint,
+    keyText: string,
+  ): Promise<{ semantic: string; xml: string; usedKey: string }> => {
+    return (await manager).kfbDecodeAsset(fileId, pathId, keyText);
+  };
+
+  /** 取当前 TextAsset 的原始 m_Script 字节（protobuf 查看器用） */
+  const getTextAssetRaw = async (fileId: string, pathId: bigint): Promise<Uint8Array> => {
+    return (await manager).getTextAssetRaw(fileId, pathId);
+  };
+
+  /** 通用：把 TextAsset 的 m_Script 回写为指定二进制字节并重建 bundle（protobuf 编辑回写用） */
+  const applyTextAssetBytes = async (fileId: string, pathId: bigint, bytes: Uint8Array): Promise<boolean> => {
+    try {
+      const result = await (await manager).applyTextAssetBytes(fileId, pathId, bytes);
+      if (result) {
+        previewVersion.value++;
+        modifiedFileIds.value.add(fileId);
+        ElMessage({ message: '回写成功（已重建 bundle）', type: 'success' });
+      }
+      return result;
+    } catch (error) {
+      ElMessage({ message: `回写失败：${error}`, type: 'error' });
+      return false;
+    }
+  };
+
+  /** KFB 内联：编辑文本回写当前 TextAsset（走加密导出流程） */
+  const kfbApplyToAsset = async (
+    fileId: string,
+    pathId: bigint,
+    keyText: string,
+    text: string,
+    format: 'semantic' | 'xml' | 'runtime',
+  ): Promise<boolean> => {
+    try {
+      const ok = await (await manager).kfbApplyToAsset(fileId, pathId, keyText, text, format);
+      if (ok) {
+        modifiedFileIds.value.add(fileId);
+        ElMessage({ message: 'KFB 战斗数据已写回，可到菜单「导出加密 AssetBundle」下载', type: 'success' });
+      }
+      return ok;
+    } catch (e) {
+      const err = e instanceof Error ? e : new Error(String(e));
+      console.error('[kfbApplyToAsset] store 捕获:', err.message, '\n', err.stack);
+      ElMessage({
+        message: `KFB 写回失败：${err.message}\n(完整堆栈已打印到 F12 控制台，请截图给开发者)`,
+        type: 'error',
+        duration: 10000,
+      });
+      return false;
+    }
+  };
+
   return {
     assetInfos,
     assetInfoMap,
@@ -688,20 +934,31 @@ export const useAssetManager = defineStore('assetManager', () => {
     khBundleFileIds,
     khFormat,
     compressionMode,
-    setCompressionMode,
     sharpen,
+    setCompressionMode,
     modifyTexture2D,
     modifyTextAsset,
+    restoreBundle,
     modifySpritePixelsToUnits,
     modifyAssetByJson,
     getModifiedBundle,
     getModifiedBundleEncrypted,
     exportTextureToDir,
     loadSingleBundleSilently,
+    loadBundlesAux,
     previewVersion,
     pendingEditTab,
     modifiedFileIds,
     exportModifiedBundle,
     exportAllModifiedBundles,
+    exportAssetsAsZip,
+    replaceFsbSample,
+    exportFsbBank,
+    kfbDecode,
+    kfbExportEncrypted,
+    kfbDecodeAsset,
+    getTextAssetRaw,
+    applyTextAssetBytes,
+    kfbApplyToAsset,
   };
 });

@@ -16,6 +16,15 @@ const getMimeType = (format: string) => mimeMap[format] ?? `audio/${format}`;
 export class AudioClipLoader extends AssetLoader<AudioClip> {
   static fsbConverter: (params: AudioClipGetResult, isPreview?: boolean) => Promise<Uint8Array<ArrayBuffer>>;
   static convertFormat: FsbConvertFormat;
+  /** 独立 FSB bank 的子音频解码器（主线程 FMOD WASM，经 Comlink 回传）：
+   *  入参 (bank 字节, 长度, 声道数, 子音频下标, 期望采样率)，返回 16-bit PCM WAV。 */
+  static fsbSubConverter?: (
+    data: Uint8Array,
+    size: number,
+    channels: number,
+    index: number,
+    sampleRate?: number,
+  ) => Promise<Uint8Array<ArrayBuffer>>;
 
   private get cacheKey(): CacheKey {
     return {
