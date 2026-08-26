@@ -43,15 +43,19 @@ jobs:
         run: npm ci
 
       - name: Run tests
+        # 白名单：只跑不依赖本地素材/绝对路径的纯逻辑回归。
+        # 其余大量 .test.ts 引用本机路径(C:/Users/...)或真实游戏 bundle，
+        # 在 ubuntu CI 无法运行，留作本地回归（见项目记忆约定）。
         run: npx vitest run \
-          --exclude '**/findDiff.test.ts' \
-          --exclude '**/khRoundtrip.test.ts' \
-          --exclude '**/_analyzeNew.test.ts' \
-          --exclude '**/_tmp_inject_toggle.test.ts' \
-          --exclude '**/bundle_rebuild_lz4.test.ts' \
-          --exclude '**/bundle_rebuild_lzhc.test.ts' \
-          --exclude '**/bundle_rebuild_multiblock.test.ts' \
-          --exclude '**/compareEncrypt.test.ts' \
-          --exclude '**/kfbNewDir.test.ts' \
-          --exclude '**/lz4_roundtrip.test.ts' \
-          --exclude '**/xgRoundtrip.test.ts'
+          src/lz4_encoder.test.ts \
+          src/utils/__tests__/lz4_roundtrip.test.ts \
+          src/compression_export_regression.test.ts \
+          src/workers/assetManager/loaders/fsbWriter.test.ts \
+          src/workers/assetManager/loaders/fsbBank.test.ts \
+          src/utils/__tests__/khLoadable.test.ts \
+          src/utils/__tests__/texture_format_size.test.ts \
+          src/utils/__tests__/kfbApplyToAsset.test.ts \
+          src/utils/__tests__/kfbCustomMissingComponents.test.ts \
+          src/utils/__tests__/kfbRefs.test.ts \
+          src/utils/__tests__/kfbSkillModel.test.ts \
+          src/utils/__tests__/kfbSync.test.ts
