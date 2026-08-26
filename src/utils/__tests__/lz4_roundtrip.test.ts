@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { compressLz4 } from '../../../packages/unity-js/src/bundle';
+import { compressLz4 } from '@arkntools/unity-js';
 import { decompressLz4 } from '@arkntools/unity-js-tools';
 
 function bytesEqual(a: Uint8Array, b: Uint8Array): boolean {
