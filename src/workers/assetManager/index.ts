@@ -22,7 +22,7 @@ import {
   type FsbWriteSample,
 } from './loaders/fsbWriter';
 import type { FsbSampleMeta } from '@/types/preview';
-import { RenameProcessor } from './utils/rename';
+import { RenameProcessor, type DuplicateNameStyle } from './utils/rename';
 import { detectRawImage, imageMimeOf } from './utils/is';
 
 export interface AssetInfo {
@@ -72,6 +72,8 @@ export class AssetManager {
    * 3=LZ4_HC(游戏兼容) | 2=LZ4 | 0=NONE(默认,不压缩)。由 UI 选择，rebuild 时传入。
    */
   private compressionMode = 0;
+  /** 导出重名文件去重后缀风格：'paren'（foo (2).png）| 'underscore'（foo_2.png），由导出选项设置 */
+  private renameStyle: DuplicateNameStyle = 'paren';
   /** KFB 自动匹配 key 缓存：fileId → 已命中的 key，避免每次打开重复遍历内置 key 库 */
   private kfbKeyCache = new Map<string, string>();
   /** 独立 FSB bank：fileId → 元数据 + 原始容器字节 + 样本替换表 */
@@ -380,7 +382,7 @@ export class AssetManager {
       },
       errorHandler,
     );
-    pool.addTasks(new RenameProcessor().process(finalItems));
+    pool.addTasks(new RenameProcessor(this.renameStyle).process(finalItems));
     await pool.wait();
 
     return { success, ...errorStat };
@@ -411,7 +413,7 @@ export class AssetManager {
       errorHandler,
     );
 
-    const renameProcessor = new RenameProcessor();
+    const renameProcessor = new RenameProcessor(this.renameStyle);
     const objPathGetter = this.createObjPathGetter(groupMethod);
 
     await Promise.all(
@@ -690,6 +692,11 @@ export class AssetManager {
     if (mode === 0 || mode === 2 || mode === 3) {
       this.compressionMode = mode;
     }
+  }
+
+  /** 设置导出重名文件去重后缀风格（'paren' 或 'underscore'），由 UI 导出选项同步 */
+  setRenameStyle(style: DuplicateNameStyle): void {
+    this.renameStyle = style;
   }
 
   /**

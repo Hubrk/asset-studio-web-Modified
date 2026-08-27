@@ -12,7 +12,7 @@ import AssetManagerWorker from '@/workers/assetManager/index.js?worker';
 import { decodeAudioFileToPcm } from '@/utils/audioDecode';
 import { useProgress } from './progress';
 import { useRepository } from './repository';
-import { useSetting } from './setting';
+import { useSetting, ExportTarget, type ExportRenameStyle } from './setting';
 
 const { AssetManager } = wrap<typeof import('@/workers/assetManager')>(new AssetManagerWorker());
 
@@ -57,7 +57,10 @@ const formatTimestamp = (d = new Date()): string => {
 };
 
 /** Build zip entries from {fileName,data} pairs, de-duplicating names inside the zip. */
-const toUniqueZipEntries = (items: { fileName: string; data: Uint8Array }[]): ZipEntry[] => {
+const toUniqueZipEntries = (
+  items: { fileName: string; data: Uint8Array }[],
+  style: ExportRenameStyle = 'paren',
+): ZipEntry[] => {
   const used = new Set<string>();
   return items.map(({ fileName, data }) => {
     let name = fileName;
@@ -66,8 +69,9 @@ const toUniqueZipEntries = (items: { fileName: string; data: Uint8Array }[]): Zi
       const base = dot > 0 ? fileName.slice(0, dot) : fileName;
       const ext = dot > 0 ? fileName.slice(dot) : '';
       let i = 2;
-      while (used.has(`${base}_${i}${ext}`)) i++;
-      name = `${base}_${i}${ext}`;
+      const render = (n: number) => (style === 'paren' ? `${base} (${n})${ext}` : `${base}_${n}${ext}`);
+      while (used.has(render(i))) i++;
+      name = render(i);
     }
     used.add(name);
     return { name, data };
@@ -112,6 +116,14 @@ export const useAssetManager = defineStore('assetManager', () => {
     () => setting.data.fsbConvertFormat,
     () => {
       AssetManager.setFsbConvertFormat(setting.data.fsbConvertFormat);
+    },
+    { immediate: true },
+  );
+
+  watch(
+    () => setting.data.exportRenameStyle,
+    async style => {
+      (await manager).setRenameStyle(style);
     },
     { immediate: true },
   );
@@ -283,6 +295,11 @@ export const useAssetManager = defineStore('assetManager', () => {
       showNotingCanBeExportToast();
       return;
     }
+    // 导出目标为 ZIP 时走浏览器打包下载，Web/PWA 端也可用
+    if (setting.data.exportTarget === ExportTarget.ZIP) {
+      await exportAssetsAsZip([info]);
+      return;
+    }
     const handle = await pickExportDir();
     if (!handle) return;
     showExportResultMessage(await (await manager).exportAsset(handle, fileId, pathId, await getDataHandler(info)));
@@ -313,6 +330,11 @@ export const useAssetManager = defineStore('assetManager', () => {
 
   const batchExportAsset = async (infos: AssetInfo[]) => {
     if (isBatchExporting.value) return;
+    // 导出目标为 ZIP 时走浏览器打包下载（exportAssetsAsZip 自行管理 isBatchExporting）
+    if (setting.data.exportTarget === ExportTarget.ZIP) {
+      await exportAssetsAsZip(infos);
+      return;
+    }
     isBatchExporting.value = true;
     try {
       const handle = await pickExportDir();
@@ -384,26 +406,59 @@ export const useAssetManager = defineStore('assetManager', () => {
     }
   };
 
-  const exportAllDecryptedBundles = async () => {
-    const fileIds = new Set(assetInfos.value.map(info => info.fileId));
+  /**
+   * 批量导出 bundle 到单个 zip：遍历 fileIds → produce 产出原始字节 → 统一命名打包下载。
+   * 收敛 加密/解密/解压/修改 等相似导出路径的重复逻辑，失败统计与消息在此统一处理。
+   * 命名规则（重名后缀风格 / zip 内是否加类型后缀）读取设置中的导出命名配置。
+   */
+  const exportBundlesToZip = async (
+    fileIds: Iterable<string>,
+    produce: (fileId: string) => Promise<ArrayBuffer | null | undefined>,
+    opts: {
+      zipPrefix: string;
+      errorAllMessage: string;
+      warnMessage: (errorCount: number) => string;
+    },
+  ) => {
     const items: { fileName: string; data: Uint8Array }[] = [];
     let errorCount = 0;
     for (const fileId of fileIds) {
-      const buffer = await getDecryptedBundle(fileId);
-      if (!buffer) { errorCount++; continue; }
-      const info = assetInfos.value.find(i => i.fileId === fileId);
-      if (!info) { errorCount++; continue; }
-      items.push({ fileName: info.fileName, data: new Uint8Array(buffer) });
+      try {
+        const buffer = await produce(fileId);
+        if (!buffer) { errorCount++; continue; }
+        const info = assetInfos.value.find(i => i.fileId === fileId);
+        if (!info) { errorCount++; continue; }
+        items.push({ fileName: info.fileName, data: new Uint8Array(buffer) });
+      } catch {
+        errorCount++;
+      }
     }
-    if (!items.length && errorCount > 0) {
-      ElMessage({ message: '批量解密失败：所有文件均无法解密', type: 'error' });
+    if (!items.length) {
+      if (errorCount > 0) {
+        ElMessage({ message: opts.errorAllMessage, type: 'error' });
+      }
       return;
     }
-    if (!items.length) return;
     if (errorCount > 0) {
-      ElMessage({ message: `批量解密完成，${errorCount} 个文件解密失败`, type: 'warning' });
+      ElMessage({ message: opts.warnMessage(errorCount), type: 'warning' });
     }
-    downloadArrayBuffer(buildZipStore(toUniqueZipEntries(items)), `decrypted_${formatTimestamp()}.zip`);
+    // 可选：zip 内条目加处理类型后缀（如 foo_encrypted.assetbundle），默认保持原名便于解压即用
+    const zipItems = setting.data.exportZipSuffix
+      ? items.map(it => ({ ...it, fileName: buildExportName(it.fileName, opts.zipPrefix) }))
+      : items;
+    downloadArrayBuffer(
+      buildZipStore(toUniqueZipEntries(zipItems, setting.data.exportRenameStyle)),
+      `${opts.zipPrefix}_${formatTimestamp()}.zip`,
+    );
+  };
+
+  const exportAllDecryptedBundles = async () => {
+    const fileIds = new Set(assetInfos.value.map(info => info.fileId));
+    await exportBundlesToZip(fileIds, fileId => getDecryptedBundle(fileId), {
+      zipPrefix: 'decrypted',
+      errorAllMessage: '批量解密失败：所有文件均无法解密',
+      warnMessage: n => `批量解密完成，${n} 个文件解密失败`,
+    });
   };
 
   /**
@@ -426,28 +481,15 @@ export const useAssetManager = defineStore('assetManager', () => {
 
   const exportAllDecompressedBundles = async () => {
     const fileIds = new Set(assetInfos.value.map(info => info.fileId));
-    const items: { fileName: string; data: Uint8Array }[] = [];
-    let errorCount = 0;
-    for (const fileId of fileIds) {
-      try {
-        const buffer = await (await manager).getDecompressedUnityFs(fileId);
-        if (!buffer) { errorCount++; continue; }
-        const info = assetInfos.value.find(i => i.fileId === fileId);
-        if (!info) { errorCount++; continue; }
-        items.push({ fileName: info.fileName, data: new Uint8Array(buffer) });
-      } catch {
-        errorCount++;
-      }
-    }
-    if (!items.length && errorCount > 0) {
-      ElMessage({ message: '批量解密解压失败：所有文件均无法处理', type: 'error' });
-      return;
-    }
-    if (!items.length) return;
-    if (errorCount > 0) {
-      ElMessage({ message: `批量解密解压完成，${errorCount} 个文件失败`, type: 'warning' });
-    }
-    downloadArrayBuffer(buildZipStore(toUniqueZipEntries(items)), `decompressed_${formatTimestamp()}.zip`);
+    await exportBundlesToZip(
+      fileIds,
+      async fileId => (await manager).getDecompressedUnityFs(fileId),
+      {
+        zipPrefix: 'decompressed',
+        errorAllMessage: '批量解密解压失败：所有文件均无法处理',
+        warnMessage: n => `批量解密解压完成，${n} 个文件失败`,
+      },
+    );
   };
 
   const exportEncryptedBundle = async (info: AssetInfo) => {
@@ -464,29 +506,16 @@ export const useAssetManager = defineStore('assetManager', () => {
   };
 
   const exportAllEncryptedBundles = async () => {
-    try {
-      const fileIds = new Set(assetInfos.value.map(info => info.fileId));
-      const items: { fileName: string; data: Uint8Array }[] = [];
-      let errorCount = 0;
-      for (const fileId of fileIds) {
-        const buffer = await (await manager).encryptBundleToKh(fileId, khFormat.value);
-        if (!buffer) { errorCount++; continue; }
-        const info = assetInfos.value.find(i => i.fileId === fileId);
-        if (!info) { errorCount++; continue; }
-        items.push({ fileName: info.fileName, data: new Uint8Array(buffer) });
-      }
-      if (!items.length && errorCount > 0) {
-        ElMessage({ message: '批量加密失败：所有文件均无法加密', type: 'error' });
-        return;
-      }
-      if (!items.length) return;
-      if (errorCount > 0) {
-        ElMessage({ message: `批量加密完成，${errorCount} 个文件加密失败`, type: 'warning' });
-      }
-      downloadArrayBuffer(buildZipStore(toUniqueZipEntries(items)), `encrypted_${formatTimestamp()}.zip`);
-    } catch (error) {
-      ElMessage({ message: `批量加密导出失败：${error}`, type: 'error' });
-    }
+    const fileIds = new Set(assetInfos.value.map(info => info.fileId));
+    await exportBundlesToZip(
+      fileIds,
+      async fileId => (await manager).encryptBundleToKh(fileId, khFormat.value),
+      {
+        zipPrefix: 'encrypted',
+        errorAllMessage: '批量加密失败：所有文件均无法加密',
+        warnMessage: n => `批量加密完成，${n} 个文件加密失败`,
+      },
+    );
   };
 
   const hasKhBundles = ref(false);
@@ -519,27 +548,16 @@ export const useAssetManager = defineStore('assetManager', () => {
    * downloaded as a single zip archive.
    */
   const exportBundlesByFileIds = async (fileIds: Iterable<string>, mode: 'encrypted' | 'decrypted') => {
-    const items: { fileName: string; data: Uint8Array }[] = [];
-    let errorCount = 0;
-    for (const fileId of fileIds) {
-      const buffer = mode === 'encrypted'
-        ? await (await manager).encryptBundleToKh(fileId, khFormat.value)
-        : await (await manager).getUnityFs(fileId);
-      if (!buffer) { errorCount++; continue; }
-      const info = assetInfos.value.find(i => i.fileId === fileId);
-      if (!info) { errorCount++; continue; }
-      items.push({ fileName: info.fileName, data: new Uint8Array(buffer) });
-    }
-    if (!items.length) {
-      if (errorCount > 0) {
-        ElMessage({ message: mode === 'encrypted' ? '批量加密失败：所有文件均无法加密' : '批量解密失败：所有文件均无法解密', type: 'error' });
-      }
-      return;
-    }
-    if (errorCount > 0) {
-      ElMessage({ message: `处理完成，${errorCount} 个文件失败`, type: 'warning' });
-    }
-    downloadArrayBuffer(buildZipStore(toUniqueZipEntries(items)), `${mode}_${formatTimestamp()}.zip`);
+    const isEncrypted = mode === 'encrypted';
+    await exportBundlesToZip(
+      fileIds,
+      async fileId => (isEncrypted ? (await manager).encryptBundleToKh(fileId, khFormat.value) : getDecryptedBundle(fileId)),
+      {
+        zipPrefix: mode,
+        errorAllMessage: isEncrypted ? '批量加密失败：所有文件均无法加密' : '批量解密失败：所有文件均无法解密',
+        warnMessage: n => `处理完成，${n} 个文件失败`,
+      },
+    );
   };
 
   /**
@@ -745,7 +763,10 @@ export const useAssetManager = defineStore('assetManager', () => {
       if (errorCount > 0) {
         ElMessage({ message: `已打包 ${items.length} 个文件，${errorCount} 个导出失败`, type: 'warning' });
       }
-      downloadArrayBuffer(buildZipStore(toUniqueZipEntries(items)), `assets_${formatTimestamp()}.zip`);
+      downloadArrayBuffer(
+        buildZipStore(toUniqueZipEntries(items, setting.data.exportRenameStyle)),
+        `assets_${formatTimestamp()}.zip`,
+      );
     } catch (error) {
       console.error(error);
       ElMessage({ message: `打包导出失败：${error}`, type: 'error' });
@@ -759,31 +780,20 @@ export const useAssetManager = defineStore('assetManager', () => {
     const fileIds = modifiedFileIds.value.size
       ? modifiedFileIds.value
       : new Set(assetInfos.value.map(info => info.fileId));
-    const items: { fileName: string; data: Uint8Array }[] = [];
-    let errorCount = 0;
-    for (const fileId of fileIds) {
-      try {
+    await exportBundlesToZip(
+      fileIds,
+      async fileId => {
         const isKh = await (await manager).isKhBundle(fileId);
-        const buffer = isKh
+        return isKh
           ? await (await manager).encryptBundleToKh(fileId, khFormat.value)
           : await getModifiedBundle(fileId);
-        if (!buffer) { errorCount++; continue; }
-        const info = assetInfos.value.find(i => i.fileId === fileId);
-        if (!info) { errorCount++; continue; }
-        items.push({ fileName: info.fileName, data: new Uint8Array(buffer) });
-      } catch {
-        errorCount++;
-      }
-    }
-    if (!items.length && errorCount > 0) {
-      ElMessage({ message: '批量导出失败：所有文件均无法导出', type: 'error' });
-      return;
-    }
-    if (!items.length) return;
-    if (errorCount > 0) {
-      ElMessage({ message: `批量导出完成，${errorCount} 个文件导出失败`, type: 'warning' });
-    }
-    downloadArrayBuffer(buildZipStore(toUniqueZipEntries(items)), `modified_${formatTimestamp()}.zip`);
+      },
+      {
+        zipPrefix: 'modified',
+        errorAllMessage: '批量导出失败：所有文件均无法导出',
+        warnMessage: n => `批量导出完成，${n} 个文件导出失败`,
+      },
+    );
   };
 
   /** FSB bank：用用户上传的音频替换某个子音频（主线程解码为 PCM16 后交给 worker 记录） */

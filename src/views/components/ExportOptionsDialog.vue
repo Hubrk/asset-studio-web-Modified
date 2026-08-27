@@ -26,17 +26,64 @@
           :show-tooltip="false"
         />
       </el-form-item>
+      <el-form-item label="Export to">
+        <el-radio-group v-model="setting.data.exportTarget">
+          <el-radio value="directory">directory</el-radio>
+          <el-radio value="zip">zip download</el-radio>
+        </el-radio-group>
+        <div style="line-height: 1.5; margin-top: 4px">
+          <el-text type="info">"directory" needs a desktop browser (File System Access API); "zip" works everywhere.</el-text>
+        </div>
+      </el-form-item>
+      <el-form-item label="Bundle compression">
+        <el-select v-model="compressionModeModel" :style="{ width: '200px' }">
+          <el-option label="None" :value="0" />
+          <el-option label="LZ4_HC (game compatible)" :value="3" />
+          <el-option label="LZ4" :value="2" />
+        </el-select>
+        <div style="line-height: 1.5; margin-top: 4px">
+          <el-text type="info">Only affects re-packed output (modified / encrypted bundles).</el-text>
+        </div>
+      </el-form-item>
+      <el-form-item label="Naming rules">
+        <el-row :gutter="12" class="naming-row">
+          <el-col :span="12">
+            <div class="naming-label">Duplicate suffix</div>
+            <el-select v-model="setting.data.exportRenameStyle" :style="{ width: '100%' }">
+              <el-option label="name (2).png" value="paren" />
+              <el-option label="name_2.png" value="underscore" />
+            </el-select>
+          </el-col>
+          <el-col :span="12">
+            <div class="naming-label">Type suffix in zip</div>
+            <el-checkbox v-model="setting.data.exportZipSuffix">foo_encrypted.assetbundle</el-checkbox>
+          </el-col>
+        </el-row>
+        <div style="line-height: 1.5; margin-top: 4px">
+          <el-text type="info">Applied to re-named files on export; zip entries keep original names unless the type suffix option is enabled.</el-text>
+        </div>
+      </el-form-item>
     </el-form>
   </el-dialog>
 </template>
 
 <script setup lang="ts">
 import { FsbConvertFormat, useSetting } from '@/store/setting';
+import { useAssetManager } from '@/store/assetManager';
 import { ExportGroupMethod } from '@/types/export';
 
 const setting = useSetting();
+const assetManager = useAssetManager();
 
 const show = ref(false);
+
+/** 写回 bundle 的压缩格式：与纹理编辑器/批量工作流共用同一 store 设置 */
+const compressionModeModel = computed({
+  get: () => assetManager.compressionMode,
+  set: (v: number) => {
+    assetManager.setCompressionMode(v);
+  },
+});
 
 const exportGroupMethodOptions: Array<{ label: string; value: ExportGroupMethod }> = [
   {
@@ -113,5 +160,16 @@ defineExpose({
     flex-direction: column;
     align-items: flex-start;
   }
+}
+
+.naming-row {
+  width: 100%;
+}
+
+.naming-label {
+  margin-bottom: 4px;
+  color: var(--el-text-color-secondary);
+  font-size: 12px;
+  line-height: 1.5;
 }
 </style>

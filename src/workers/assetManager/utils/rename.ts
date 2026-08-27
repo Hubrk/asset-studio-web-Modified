@@ -1,7 +1,12 @@
 import type { AssetExportItem } from '../loaders';
 
+/** 重名文件去重后缀风格：foo (2).png 或 foo_2.png */
+export type DuplicateNameStyle = 'paren' | 'underscore';
+
 export class RenameProcessor {
   private readonly duplicateMap = new Map<string, number>();
+
+  constructor(private readonly style: DuplicateNameStyle = 'paren') {}
 
   process(list: AssetExportItem[], prePath?: string) {
     prePath = prePath?.trim();
@@ -20,9 +25,13 @@ export class RenameProcessor {
 
   private rename(name: string, num: number) {
     const parts = name.split('.');
-    if (parts.length === 1) return `${name} (${num})`;
+    if (parts.length === 1) return this.applyStyle(name, num);
     const ext = parts.pop();
     const baseName = parts.join('.');
-    return `${baseName} (${num}).${ext}`;
+    return `${this.applyStyle(baseName, num)}.${ext}`;
+  }
+
+  private applyStyle(baseName: string, num: number) {
+    return this.style === 'paren' ? `${baseName} (${num})` : `${baseName}_${num}`;
   }
 }
