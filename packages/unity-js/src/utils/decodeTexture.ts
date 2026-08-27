@@ -15,10 +15,11 @@ import {
   decodeEtc1,
   decodeEtc2Rgb,
   decodeEtc2Rgba1,
-  decodeEtc2Rgba8,
   decodePvrtc2bpp,
   decodePvrtc4bpp,
-} from '@arkntools/unity-js-tools';
+} from '@arkntools/unity-js-tools-wasm';
+// decodeEtc2Rgba8 使用项目内移植的 alpha 补丁（见 etc2Patch.ts）
+import { decodeEtc2Rgba8 } from './etc2Patch';
 import { TextureFormat as TF } from '../classes/types';
 
 type DecodeFunction = (

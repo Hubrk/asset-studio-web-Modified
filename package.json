@@ -4,6 +4,7 @@
   "version": "0.0.0",
   "private": true,
   "scripts": {
+    "postinstall": "node scripts/patch-legacy-cjs.cjs",
     "dev": "vite --force",
     "build": "run-p type-check \"build-only {@}\" --",
     "preview": "vite preview",

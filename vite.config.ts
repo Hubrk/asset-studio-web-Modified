@@ -121,16 +121,30 @@ export default defineConfig(({ command }) => {
     },
   },
   resolve: {
-    alias: {
-      '@': fileURLToPath(new URL('./src', import.meta.url)),
-      'lodash-es': 'es-toolkit/compat',
-      '@jimp/js-png': '@jimp/wasm-png',
+    alias: [
+      { find: '@', replacement: fileURLToPath(new URL('./src', import.meta.url)) },
+      // unity-js-tools(-wasm) 是 CJS/ESM 混淆包（__exportStar 运行时 re-export / .js 无 type:module），
+      // rolldown-vite 无法静态枚举其 named export，decodeAstc 等导入在 dev 下报
+      // "does not provide an export" 导致白屏。postinstall 已生成 index.browser.mjs（ESM 语义），
+      // 两个包统一精确 alias 到该副本；等值而稳定的导出集（解码 + 解压函数）。
+      {
+        find: /^@arkntools\/unity-js-tools-wasm$/,
+        replacement: resolve(__dirname, 'node_modules/@arkntools/unity-js-tools-wasm/index.browser.mjs'),
+      },
+      {
+        find: /^@arkntools\/unity-js-tools$/,
+        replacement: resolve(__dirname, 'node_modules/@arkntools/unity-js-tools-wasm/index.browser.mjs'),
+      },
+      { find: 'lodash-es', replacement: 'es-toolkit/compat' },
+      { find: '@jimp/js-png', replacement: '@jimp/wasm-png' },
       // node-web-audio-api 是 FMOD 桌面端音频后端的原生模块，浏览器/Web 端不会执行该路径
-      'node-web-audio-api': 'empty-module',
-    },
+      { find: 'node-web-audio-api', replacement: 'empty-module' },
+    ],
   },
   optimizeDeps: {
-    exclude: ['@jimp/wasm-png', '@jimp/js-png', 'onnxruntime-web', '@arkntools/unity-js'],
+    include: ['exif-parser', 'mime', '@jimp/core'],
+    needsInterop: ['exif-parser', 'mime', 'mime/lite.js'],
+    exclude: ['@arkntools/unity-js'],
   },
   // onnxruntime-web 需要独立 wasm 文件，避免被打包进 chunk
   // 通过 ?url 引用具体 wasm 资源路径由 Vite 处理为独立文件
